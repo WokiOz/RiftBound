@@ -1,0 +1,42 @@
+# Stack Portainer pour l'image publiée sur GitHub Packages (ghcr.io).
+# À adapter : nom d'image, domaine, et le reverse proxy déjà en place sur le serveur.
+#
+# Avant le premier déploiement :
+#   1. Créer .env à côté de ce fichier (voir .env.example, section Docker).
+#   2. Créer un couple de clés SSH dédié (ssh-keygen -t ed25519 -f git_ssh_key -N ""),
+#      ajouter git_ssh_key.pub comme "Deploy key" du dépôt avec accès en écriture,
+#      et placer git_ssh_key (la clé privée) à côté de ce fichier.
+#   3. Si le package ghcr.io est privé, se connecter d'abord sur le serveur :
+#      echo <PAT avec read:packages> | docker login ghcr.io -u <utilisateur> --password-stdin
+
+services:
+  web:
+    image: ghcr.io/wokioz/riftbound:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - data:/data
+      - repo:/repo
+    secrets:
+      - git_ssh_key
+
+  sync:
+    image: ghcr.io/wokioz/riftbound:latest
+    restart: unless-stopped
+    command: ["sh", "docker/sync-loop.sh"]
+    env_file: .env
+    volumes:
+      - data:/data
+      - repo:/repo
+    secrets:
+      - git_ssh_key
+
+secrets:
+  git_ssh_key:
+    file: ./git_ssh_key
+
+volumes:
+  data:   # catalogue, prix, inventaire (persistant, jamais poussé sur Git)
+  repo:   # clone Git utilisé pour publier reports/*.md

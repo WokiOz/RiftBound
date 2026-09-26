@@ -1,9 +1,9 @@
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { ROOT, GIT_PUBLISH, GIT_BRANCH } = require('./config');
+const { GIT_REPO_DIR, GIT_PUBLISH, GIT_BRANCH } = require('./config');
 
 const run = promisify(execFile);
-const git = (...args) => run('git', args, { cwd: ROOT });
+const git = (...args) => run('git', args, { cwd: GIT_REPO_DIR });
 
 // Commit + push du dossier reports/. "[skip ci]" évite de relancer le déploiement.
 async function publishReports() {
