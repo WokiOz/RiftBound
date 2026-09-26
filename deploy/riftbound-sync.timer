@@ -1,0 +1,10 @@
+[Unit]
+Description=Synchronisation quotidienne des prix Riftbound
+
+[Timer]
+# tcgcsv.com publie ses prix une fois par jour vers 20h UTC
+OnCalendar=*-*-* 21:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
