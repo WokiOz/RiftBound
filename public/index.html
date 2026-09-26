@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Riftbound Inventaire</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Riftbound Inventaire</h1>
+    <div id="status" class="muted"></div>
+    <button id="sync-btn">Synchroniser catalogue et prix</button>
+  </header>
+
+  <nav>
+    <button data-tab="scan" class="active">Scanner</button>
+    <button data-tab="inventory">Inventaire</button>
+    <button data-tab="decks">Decks</button>
+    <button data-tab="catalog">Catalogue & prix</button>
+  </nav>
+
+  <main>
+    <section id="scan" class="tab active">
+      <p class="muted">Photographiez la carte : le code imprimé en bas à gauche (ex. « UNL • 121/219 ») doit être net.</p>
+      <label class="button">
+        Prendre une photo
+        <input id="scan-input" type="file" accept="image/*" capture="environment" hidden>
+      </label>
+      <div id="scan-result"></div>
+      <h2>Recherche manuelle</h2>
+      <input id="manual-search" type="search" placeholder="Nom ou code (ex. unl-121)">
+      <div id="manual-result"></div>
+    </section>
+
+    <section id="inventory" class="tab">
+      <div id="inventory-summary"></div>
+      <div id="inventory-list"></div>
+    </section>
+
+    <section id="decks" class="tab">
+      <div id="decks-list"></div>
+    </section>
+
+    <section id="catalog" class="tab">
+      <div class="filters">
+        <input id="catalog-search" type="search" placeholder="Nom de carte">
+        <select id="catalog-set"><option value="">Tous les sets</option></select>
+        <select id="catalog-type"><option value="">Tous les types</option></select>
+      </div>
+      <div id="catalog-list"></div>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "riftbound-inventory",
+  "version": "1.0.0",
+  "description": "Inventaire, scan, decks et prix des cartes Riftbound",
+  "private": true,
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "sync": "node scripts/sync.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

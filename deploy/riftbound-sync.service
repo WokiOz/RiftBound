@@ -1,0 +1,12 @@
+[Unit]
+Description=Riftbound : synchronisation catalogue + prix, rapports Markdown, push Git
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=riftbound
+WorkingDirectory=/opt/riftbound
+EnvironmentFile=/opt/riftbound/.env
+ExecStart=/usr/bin/node scripts/sync.js
+StateDirectory=riftbound

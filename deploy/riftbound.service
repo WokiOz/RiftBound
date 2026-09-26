@@ -1,0 +1,17 @@
+[Unit]
+Description=Riftbound inventaire (site web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riftbound
+WorkingDirectory=/opt/riftbound
+EnvironmentFile=/opt/riftbound/.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+# Crée /var/lib/riftbound (DATA_DIR) appartenant à l'utilisateur riftbound
+StateDirectory=riftbound
+
+[Install]
+WantedBy=multi-user.target
