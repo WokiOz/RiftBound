@@ -84,6 +84,10 @@ input, select { width: 100%; padding: 8px; margin: 4px 0; border-radius: 6px; bo
   position: absolute; left: 0; right: 0; bottom: 10px; text-align: center;
   font-size: 0.82rem; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,0.8); pointer-events: none;
 }
+#camera-debug {
+  position: absolute; left: 8px; top: 8px; font-size: 0.75rem; font-variant-numeric: tabular-nums;
+  color: #fff; background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; pointer-events: none;
+}
 .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
 .flash.go { animation: flash-anim 0.35s ease-out; }
 @keyframes flash-anim { 0% { opacity: 0.9; } 100% { opacity: 0; } }
