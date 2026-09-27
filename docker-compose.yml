@@ -1,41 +1,53 @@
 # Stack Portainer pour l'image publiée sur GitHub Packages (ghcr.io).
-# À adapter : nom d'image, domaine, et le reverse proxy déjà en place sur le serveur.
+# Pensée pour être liée directement au dépôt Git dans Portainer :
+# Stacks → Add stack → Repository → URL de ce dépôt → Compose path "docker-compose.yml".
+# Aucun fichier local n'est nécessaire à côté de ce fichier : toute la config passe
+# par les variables d'environnement de la stack (voir .env.example).
 #
 # Avant le premier déploiement :
-#   1. Créer .env à côté de ce fichier (voir .env.example, section Docker).
-#   2. Créer un couple de clés SSH dédié (ssh-keygen -t ed25519 -f git_ssh_key -N ""),
-#      ajouter git_ssh_key.pub comme "Deploy key" du dépôt avec accès en écriture,
-#      et placer git_ssh_key (la clé privée) à côté de ce fichier.
+#   1. Renseigner les variables de .env.example dans l'éditeur de stack Portainer
+#      (ou fournir un fichier .env si déploiement en ligne de commande).
+#   2. Générer une clé SSH dédiée et l'encoder en base64 pour GIT_SSH_KEY_B64 :
+#      ssh-keygen -t ed25519 -N "" -f git_ssh_key
+#      base64 -w0 git_ssh_key   # -> à coller dans GIT_SSH_KEY_B64 (variable "sensible")
+#      Ajouter git_ssh_key.pub comme "Deploy key" du dépôt, avec accès en écriture.
 #   3. Si le package ghcr.io est privé, se connecter d'abord sur le serveur :
 #      echo <PAT avec read:packages> | docker login ghcr.io -u <utilisateur> --password-stdin
+
+# Variables communes aux deux services (définies dans la stack Portainer, ou dans
+# .env pour un déploiement en ligne de commande) : voir .env.example pour le détail.
+x-app-env: &app-env
+  AUTH_USER: ${AUTH_USER:-}
+  AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+  GIT_PUBLISH: ${GIT_PUBLISH:-1}
+  GIT_BRANCH: ${GIT_BRANCH:-main}
+  GIT_REPO_URL: ${GIT_REPO_URL:-git@github.com:wokioz/riftbound.git}
+  GIT_SSH_KEY_B64: ${GIT_SSH_KEY_B64:-}
+  GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-Riftbound bot}
+  GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-riftbound@localhost}
+  SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-86400}
 
 services:
   web:
     image: ghcr.io/wokioz/riftbound:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
-    env_file: .env
+      - "${WEB_PORT:-5678}:3000"
+    environment:
+      <<: *app-env
     volumes:
       - data:/data
       - repo:/repo
-    secrets:
-      - git_ssh_key
 
   sync:
     image: ghcr.io/wokioz/riftbound:latest
     restart: unless-stopped
     command: ["sh", "docker/sync-loop.sh"]
-    env_file: .env
+    environment:
+      <<: *app-env
     volumes:
       - data:/data
       - repo:/repo
-    secrets:
-      - git_ssh_key
-
-secrets:
-  git_ssh_key:
-    file: ./git_ssh_key
 
 volumes:
   data:   # catalogue, prix, inventaire (persistant, jamais poussé sur Git)

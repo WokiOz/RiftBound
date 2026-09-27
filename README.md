@@ -71,31 +71,35 @@ npm test
 L'image est construite et publiée automatiquement sur **GitHub Packages** (`ghcr.io/wokioz/riftbound`) par `.github/workflows/deploy.yml` à chaque push sur `main` : `:latest` pointe toujours vers la dernière version, et chaque build est aussi tagué avec le sha court du commit. Un tag Git `vX.Y.Z` publie en plus l'image sous ce numéro de version.
 
 La stack (`docker-compose.yml`) a deux services partageant les mêmes volumes :
-- **web** : sert le site sur le port 3000.
+- **web** : sert le site, publié sur le port **5678** de l'hôte (`WEB_PORT`, configurable).
 - **sync** : relance `scripts/sync.js` toutes les `SYNC_INTERVAL_SECONDS` (24h par défaut).
 
-Les deux poussent les rapports sur GitHub via un clone Git conservé dans le volume `repo` (cloné automatiquement au premier démarrage).
+Les deux poussent les rapports sur GitHub via un clone Git conservé dans le volume `repo` (cloné automatiquement au premier démarrage). `docker-compose.yml` ne référence aucun fichier local : toute la config passe par des variables d'environnement, pour pouvoir lier la stack directement au dépôt Git dans Portainer.
 
-**1. Préparer les fichiers**
+**1. Lier le dépôt dans Portainer**
 
-```bash
-mkdir riftbound && cd riftbound
-curl -O https://raw.githubusercontent.com/wokioz/riftbound/main/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/wokioz/riftbound/main/.env.example
-```
+*Stacks → Add stack → Build method : Repository* :
+- **Repository URL** : `https://github.com/wokioz/riftbound` (ou l'URL de ton fork)
+- **Repository reference** : `refs/heads/main`
+- **Compose path** : `docker-compose.yml`
 
-Éditer `.env` (identité des commits, `GIT_REPO_URL` si le dépôt n'est pas `wokioz/riftbound`, etc.).
+Portainer clone le dépôt et déploie ce fichier tel quel, sans rien à copier à la main.
 
 **2. Deploy key GitHub (écriture)**
 
 ```bash
 ssh-keygen -t ed25519 -N "" -f git_ssh_key
-cat git_ssh_key.pub
+base64 -w0 git_ssh_key    # à coller dans la variable GIT_SSH_KEY_B64
+cat git_ssh_key.pub       # à ajouter comme Deploy key
 ```
 
-Ajouter cette clé publique dans GitHub → *Settings → Deploy keys* du dépôt, **avec « Allow write access »**. `git_ssh_key` (la clé privée, à côté de `docker-compose.yml`) est monté en secret Docker par la stack ; ne pas le committer.
+Ajouter la clé publique dans GitHub → *Settings → Deploy keys* du dépôt, **avec « Allow write access »** (nécessaire pour pousser les rapports). Ne jamais committer `git_ssh_key`.
 
-**3. Package privé (si applicable)**
+**3. Variables d'environnement de la stack**
+
+Dans l'éditeur de stack Portainer (section *Environment variables*), renseigner les variables listées dans `.env.example` — en particulier `GIT_SSH_KEY_B64` (coller le base64 de l'étape précédente) et `AUTH_PASSWORD` si utilisée, à marquer comme **sensibles**. Laisser `WEB_PORT` à `5678` ou le changer si ce port est déjà pris sur le serveur.
+
+**4. Package privé (si applicable)**
 
 Si le package `ghcr.io/wokioz/riftbound` est privé, connecter le serveur une fois :
 
@@ -105,27 +109,21 @@ echo <PAT avec le scope read:packages> | docker login ghcr.io -u <utilisateur> -
 
 Ou le rendre public depuis GitHub → l'onglet *Packages* du profil/organisation → *Package settings*.
 
-**4. Lancer la stack**
+**5. Déployer**
 
-Dans Portainer : *Stacks → Add stack*, coller le contenu de `docker-compose.yml`, définir les variables de `.env` dans l'éditeur de stack (ou fournir le fichier `.env`), joindre `git_ssh_key` comme fichier de secret, puis déployer.
+Bouton *Deploy the stack*. Le site est joignable sur `http://<serveur>:5678`.
 
-En ligne de commande :
+En ligne de commande (sans Portainer), copier `docker-compose.yml` et `.env.example` (renommé `.env`) côte à côte, puis :
 
 ```bash
 docker compose up -d
 ```
 
-**5. Mettre à jour**
+**6. Mettre à jour**
 
-`:latest` est réécrit à chaque push sur `main`. Sur le serveur :
+`:latest` est réécrit à chaque push sur `main`. Sur le serveur : bouton Portainer *Pull and redeploy* (ou `docker compose pull && docker compose up -d` en ligne de commande), ou l'agent [Watchtower](https://containrrr.dev/watchtower/) pour automatiser. Un push sur `main` ne redéploie pas la stack tout seul : Portainer republie la nouvelle image seulement quand on la lui demande (bouton, webhook, ou Watchtower).
 
-```bash
-docker compose pull && docker compose up -d
-```
-
-(Portainer : bouton *Pull and redeploy*, ou l'agent [Watchtower](https://containrrr.dev/watchtower/) pour automatiser.)
-
-**HTTPS** : le service `web` n'expose que du HTTP sur le port 3000. Passer par le reverse proxy déjà en place sur le serveur (nginx, Traefik, Nginx Proxy Manager…) pour le certificat. Obligatoire si `AUTH_USER`/`AUTH_PASSWORD` sont définis : en HTTP le mot de passe circule en clair.
+**HTTPS** : le service `web` n'expose que du HTTP. Passer par le reverse proxy déjà en place sur le serveur (nginx, Traefik, Nginx Proxy Manager…) pour le certificat, en le pointant vers le port `5678`. Obligatoire si `AUTH_USER`/`AUTH_PASSWORD` sont définis : en HTTP le mot de passe circule en clair.
 
 ## Déploiement alternatif : systemd
 
@@ -158,20 +156,32 @@ sudo certbot --nginx -d riftbound.example.com
 
 ## Variables d'environnement
 
-Docker (`.env` à côté de `docker-compose.yml`) et systemd (`deploy/.env.example`) partagent la même base ; Docker fixe en plus `DATA_DIR=/data` et `GIT_REPO_DIR=/repo` dans l'image (volumes de la stack), à ne pas redéfinir.
+Docker (stack Portainer ou `.env` à côté de `docker-compose.yml`) et systemd (`deploy/.env.example`) ont des variables différentes : Docker fixe `DATA_DIR=/data` et `GIT_REPO_DIR=/repo` dans l'image (volumes de la stack) et publie le port via `WEB_PORT`, pendant que systemd utilise `PORT`/`DATA_DIR` directement.
+
+**Docker** (`docker-compose.yml`, détail dans `.env.example`) :
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `WEB_PORT` | `5678` | port publié sur l'hôte par le service `web` (le conteneur écoute en interne sur 3000) |
+| `AUTH_USER` / `AUTH_PASSWORD` | vide | active l'authentification HTTP Basic |
+| `GIT_PUBLISH` | `1` | `1` = commit + push de `reports/` après chaque synchronisation |
+| `GIT_BRANCH` | `main` | branche de publication |
+| `GIT_REPO_URL` | `git@github.com:wokioz/riftbound.git` | dépôt cloné dans le volume `repo` au premier démarrage |
+| `GIT_SSH_KEY_B64` | vide | clé privée (Deploy key, écriture) encodée en base64 — variable à marquer « sensible » |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `Riftbound bot` / `riftbound@localhost` | identité des commits automatiques |
+| `SYNC_INTERVAL_SECONDS` | `86400` | intervalle du service `sync`, en secondes |
+
+**systemd** (`deploy/.env.example`) :
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
 | `PORT` | `3000` | port HTTP |
-| `DATA_DIR` | `./data` | catalogue, prix, inventaire (JSON) — systemd uniquement, fixé par l'image en Docker |
+| `DATA_DIR` | `./data` | catalogue, prix, inventaire (JSON) |
 | `AUTH_USER` / `AUTH_PASSWORD` | vide | active l'authentification HTTP Basic |
 | `GIT_PUBLISH` | vide | `1` = commit + push de `reports/` après chaque synchronisation |
 | `GIT_BRANCH` | `main` | branche de publication |
-| `GIT_REPO_URL` | vide | Docker uniquement : dépôt cloné dans le volume `repo` au premier démarrage |
-| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `Riftbound bot` / `riftbound@localhost` | Docker uniquement : identité des commits |
-| `SYNC_INTERVAL_SECONDS` | `86400` | Docker uniquement : intervalle du service `sync` |
 
-L'inventaire (`DATA_DIR/inventory.json`) n'est pas versionné : à sauvegarder (volume `data` en Docker).
+L'inventaire (`inventory.json`) n'est pas versionné : à sauvegarder (volume `data` en Docker, `DATA_DIR` en systemd).
 
 ## API
 
@@ -187,7 +197,7 @@ L'inventaire (`DATA_DIR/inventory.json`) n'est pas versionné : à sauvegarder (
 
 ## Image Docker
 
-`docker build .` produit une image `node:22-alpine` avec `git`, `openssh-client` et `util-linux` (pour `flock`). Elle tourne en utilisateur non-root (`node`). `ENTRYPOINT` (`docker/entrypoint.sh`) configure la clé SSH et l'identité Git, puis clone `GIT_REPO_URL` dans `GIT_REPO_DIR` (`/repo`) si absent, avant de lancer la commande :
+`docker build .` produit une image `node:22-alpine` avec `git`, `openssh-client` et `util-linux` (pour `flock`). Elle tourne en utilisateur non-root (`node`). `ENTRYPOINT` (`docker/entrypoint.sh`) écrit la clé SSH depuis `GIT_SSH_KEY_B64` (ou un fichier monté via `GIT_SSH_KEY_FILE`/`/run/secrets/git_ssh_key`), configure l'identité Git, puis clone `GIT_REPO_URL` dans `GIT_REPO_DIR` (`/repo`) si absent, avant de lancer la commande :
 
 - par défaut : `node server.js` (service `web`) ;
 - avec `sh docker/sync-loop.sh` (service `sync`) : synchronisation immédiate puis toutes les `SYNC_INTERVAL_SECONDS`.

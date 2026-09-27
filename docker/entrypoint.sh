@@ -3,10 +3,18 @@
 # puis lance la commande passée en argument (node server.js, ou la boucle de sync).
 set -e
 
+# Clé privée : soit un fichier monté (secret Docker ou volume), soit son contenu
+# encodé en base64 dans GIT_SSH_KEY_B64 (pratique pour une stack Portainer liée
+# à ce dépôt Git, où aucun fichier local ne peut être ajouté à côté du compose).
 SSH_KEY_FILE="${GIT_SSH_KEY_FILE:-/run/secrets/git_ssh_key}"
 if [ -f "$SSH_KEY_FILE" ]; then
   mkdir -p "$HOME/.ssh"
   cp "$SSH_KEY_FILE" "$HOME/.ssh/id_ed25519"
+elif [ -n "$GIT_SSH_KEY_B64" ]; then
+  mkdir -p "$HOME/.ssh"
+  echo "$GIT_SSH_KEY_B64" | base64 -d > "$HOME/.ssh/id_ed25519"
+fi
+if [ -f "$HOME/.ssh/id_ed25519" ]; then
   chmod 600 "$HOME/.ssh/id_ed25519"
   ssh-keyscan -t ed25519,rsa github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
   export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
