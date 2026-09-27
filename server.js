@@ -52,6 +52,22 @@ if (config.AUTH_USER && config.AUTH_PASSWORD) {
   });
 }
 
+// Identifiant qui change à chaque démarrage du conteneur, utilisé pour
+// "casser" le cache de app.js/style.css. Certains reverse proxys (Nginx,
+// Nginx Proxy Manager...) mettent en cache les fichiers .js/.css plusieurs
+// heures indépendamment des en-têtes envoyés par ce serveur ; en changeant
+// l'URL à chaque déploiement, un nouveau déploiement n'est jamais bloqué
+// par une ancienne version encore en cache côté proxy.
+const BUILD_ID = Date.now().toString(36);
+const INDEX_HTML = fs
+  .readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
+  .replace('app.js"', `app.js?v=${BUILD_ID}"`)
+  .replace('style.css"', `style.css?v=${BUILD_ID}"`);
+
+app.get(['/', '/index.html'], (req, res) => {
+  res.set('Cache-Control', 'no-cache').type('html').send(INDEX_HTML);
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api', (req, res, next) => {
   reloadIfChanged();
