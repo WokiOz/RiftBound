@@ -413,7 +413,8 @@ let liveCameraActive = false;
 let cameraStream = null;
 let cameraWatchId = null;
 let cameraPrevSample = null;
-let cameraStableSince = null;
+let cameraProgressMs = 0; // "réserve" de stabilité, façon seau percé (voir watchCameraFrame)
+let cameraLastTs = null;
 const CAMERA_STABLE_MS = 550;
 
 const cameraVideo = $('#camera-video');
@@ -423,6 +424,11 @@ const RING_CIRCUMFERENCE = 88;
 
 $('#btn-open-camera').addEventListener('click', openCamera);
 $('#btn-close-camera').addEventListener('click', closeCamera);
+// Secours si l'alignement automatique peine (lumière, tremblement...) :
+// force la capture immédiatement, sans attendre la détection de stabilité.
+$('#btn-capture-now').addEventListener('click', () => {
+  if (liveCameraActive && cameraWatchId) captureFromCamera();
+});
 
 // Repli pour d'anciens navigateurs qui n'exposent pas encore
 // navigator.mediaDevices.getUserMedia (norme standard depuis 2017) mais une
@@ -479,7 +485,8 @@ function armCameraWatch() {
   cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
   $('#camera-hint').textContent = 'Placez la carte dans le cadre';
   cameraPrevSample = null;
-  cameraStableSince = null;
+  cameraProgressMs = 0;
+  cameraLastTs = null;
   cameraWatchId = requestAnimationFrame(watchCameraFrame);
 }
 
@@ -504,8 +511,12 @@ function sampleGuideRegion() {
   return ctx.getImageData(0, 0, 16, 22).data;
 }
 
-function watchCameraFrame() {
+function watchCameraFrame(ts) {
   if (!liveCameraActive) return;
+  // dt borné : évite un grand saut après un rendu en pause (onglet en arrière-plan)
+  const dt = cameraLastTs ? Math.min(100, ts - cameraLastTs) : 16;
+  cameraLastTs = ts;
+
   const sample = sampleGuideRegion();
   if (!sample) {
     cameraWatchId = requestAnimationFrame(watchCameraFrame);
@@ -523,23 +534,23 @@ function watchCameraFrame() {
   cameraPrevSample = sample;
 
   const hasContent = variance > 120; // pas juste une surface unie (table vide)
-  const isStable = diff < 6;
-  const now = performance.now();
+  const isStable = diff < 14; // tolère un léger tremblement naturel de la main
 
-  if (hasContent && isStable) {
-    if (!cameraStableSince) cameraStableSince = now;
-    const elapsed = now - cameraStableSince;
-    cameraGuide.classList.add('aligned');
-    cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - Math.min(1, elapsed / CAMERA_STABLE_MS)));
-    if (elapsed >= CAMERA_STABLE_MS) {
-      captureFromCamera();
-      return; // la surveillance reprendra via armCameraWatch()
-    }
-  } else {
-    cameraStableSince = null;
-    cameraGuide.classList.remove('aligned');
-    cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
-    $('#camera-hint').textContent = hasContent ? 'Ne bougez plus…' : 'Placez la carte dans le cadre';
+  // "Seau percé" plutôt qu'un chrono qui repart de zéro au moindre à-coup :
+  // un tremblement ponctuel fait juste redescendre un peu la jauge, elle ne
+  // se vide pas d'un coup. Beaucoup plus tolérant à une main qui tremble
+  // légèrement, tout en repartant vraiment de zéro si la carte est retirée.
+  if (!hasContent) cameraProgressMs = 0;
+  else if (isStable) cameraProgressMs = Math.min(CAMERA_STABLE_MS, cameraProgressMs + dt);
+  else cameraProgressMs = Math.max(0, cameraProgressMs - dt * 1.5);
+
+  cameraGuide.classList.toggle('aligned', cameraProgressMs > 0);
+  cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - cameraProgressMs / CAMERA_STABLE_MS));
+  $('#camera-hint').textContent = hasContent ? 'Ne bougez plus…' : 'Placez la carte dans le cadre';
+
+  if (cameraProgressMs >= CAMERA_STABLE_MS) {
+    captureFromCamera();
+    return; // la surveillance reprendra via armCameraWatch()
   }
   cameraWatchId = requestAnimationFrame(watchCameraFrame);
 }
