@@ -83,34 +83,77 @@ document.addEventListener('click', async (e) => {
   });
   if (btn.dataset.delta) loadInventory();
   else btn.textContent = `✓ ${r.finish} (${r.qty})`;
+
+  if (!btn.dataset.delta && btn.closest('#scan-result-cards')) recordScanAdd(btn.dataset.add, r.finish);
 });
 
 // ---------- Scanner (photo entière -> cadre de recadrage -> OCR sur le cadre) ----------
 // Le code imprimé occupe une toute petite partie de la carte : plutôt que de
 // demander un zoom téléphone extrême (flou, mise au point ratée), on prend la
 // carte entière puis on isole/agrandit numériquement la zone du code avant l'OCR.
+// Une "queue" de 1 (bouton "Prendre une photo") ou plusieurs photos (bouton
+// "Scanner plusieurs cartes") est traitée carte par carte, avec une petite
+// session qui s'accumule et un passage automatique à la carte suivante dès
+// qu'on appuie sur + Normal ou + Foil (une carte physique n'a qu'une finition).
 const cropTool = $('#crop-tool');
 const cropStage = $('#crop-stage');
 const cropCanvas = $('#crop-canvas');
 const cropBox = $('#crop-box');
-let cropBitmap = null; // photo source, pleine résolution
+let cropBitmap = null; // photo en cours, pleine résolution
+let scanQueue = [];
+let scanIndex = 0;
+let scanSession = []; // { id, name, finish, qty } ajoutés pendant cette session
+let lastScanCards = []; // cartes du dernier code lu, pour retrouver leur nom lors de l'ajout
 
-$('#scan-input').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+$('#scan-input').addEventListener('change', (e) => startScanQueue([...e.target.files]));
+$('#scan-multi-input').addEventListener('change', (e) => startScanQueue([...e.target.files]));
+
+function startScanQueue(files) {
+  if (!files.length) return;
+  scanQueue = files;
+  scanIndex = 0;
+  scanSession = [];
+  renderScanSession();
+  loadScanQueueItem();
+  $('#scan-input').value = '';
+  $('#scan-multi-input').value = '';
+}
+
+async function loadScanQueueItem() {
+  if (scanIndex >= scanQueue.length) {
+    cropTool.hidden = true;
+    cropBitmap = null;
+    $('#scan-result').innerHTML = scanQueue.length > 1
+      ? `<p class="ok">Session terminée : ${scanSession.reduce((a, s) => a + s.qty, 0)} exemplaire(s) ajouté(s).</p>`
+      : '';
+    scanQueue = [];
+    return;
+  }
+  const multi = scanQueue.length > 1;
+  $('#crop-progress').hidden = !multi;
+  if (multi) {
+    $('#crop-progress-label').textContent = `Carte ${scanIndex + 1} sur ${scanQueue.length}`;
+    $('#crop-dots').innerHTML = scanQueue
+      .map((_, i) => `<span class="${i < scanIndex ? 'done' : i === scanIndex ? 'now' : ''}"></span>`)
+      .join('');
+  }
+  $('#crop-skip-btn').hidden = !multi;
+  $('#scan-result').innerHTML = '';
   try {
-    cropBitmap = await createImageBitmap(file);
+    cropBitmap = await createImageBitmap(scanQueue[scanIndex]);
     // Rendre la section visible avant de mesurer sa largeur : un parent masqué
     // (hidden) rapporte clientWidth = 0, ce qui faussait le calcul du canvas.
     cropTool.hidden = false;
-    $('#scan-result').innerHTML = '';
     drawCropStage();
     resetCropBox();
   } catch (err) {
     $('#scan-result').innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
-  } finally {
-    e.target.value = '';
   }
+}
+
+$('#crop-skip-btn').addEventListener('click', () => {
+  scanIndex += 1;
+  loadScanQueueItem();
 });
 
 // Affiche la photo à une taille raisonnable pour l'écran (l'OCR se fera sur la
@@ -127,11 +170,12 @@ function drawCropStage() {
 }
 
 // Cadre par défaut : bande en bas à gauche, où se trouve le code sur une carte
-// Riftbound cadrée normalement. L'utilisateur l'ajuste ensuite si besoin.
+// Riftbound cadrée normalement (mesuré sur une image de référence : le texte
+// occupe environ 95,5 % à 99 % de la hauteur). L'utilisateur l'ajuste ensuite.
 function resetCropBox() {
   const w = cropCanvas.width * 0.4;
-  const h = cropCanvas.height * 0.09;
-  setCropBoxRect(cropCanvas.width * 0.04, cropCanvas.height * 0.88, w, h);
+  const h = cropCanvas.height * 0.05;
+  setCropBoxRect(cropCanvas.width * 0.03, cropCanvas.height * 0.945, w, h);
 }
 
 function setCropBoxRect(x, y, w, h) {
@@ -175,6 +219,7 @@ $('#crop-handle').addEventListener('pointerdown', (e) => {
 $('#crop-cancel-btn').addEventListener('click', () => {
   cropTool.hidden = true;
   cropBitmap = null;
+  scanQueue = [];
 });
 
 $('#crop-scan-btn').addEventListener('click', async () => {
@@ -183,17 +228,39 @@ $('#crop-scan-btn').addEventListener('click', async () => {
   try {
     const { data } = await Tesseract.recognize(extractCrop(), 'eng');
     const r = await api('/api/scan', { method: 'POST', body: { text: data.text } });
+    lastScanCards = r.cards || [];
     if (!r.code) {
       out.innerHTML = '<p>Code non détecté. Ajustez le cadre bien sur le texte (ex. « UNL • 121/219 »), ou utilisez la recherche manuelle.</p>';
     } else if (!r.cards.length) {
       out.innerHTML = `<p>Code lu : ${esc(r.code.set)} ${r.code.number}/${r.code.total}, aucune carte correspondante.</p>`;
     } else {
-      out.innerHTML = `<p>Code lu : ${esc(r.code.set)} ${r.code.number}/${r.code.total}</p>${r.cards.map(cardRow).join('')}`;
+      out.innerHTML = `<div id="scan-result-cards">${r.cards.map(cardRow).join('')}</div>`;
     }
   } catch (err) {
     out.innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
   }
 });
+
+// Ajout depuis le résultat d'un scan : garde une trace dans la session en
+// cours et enchaîne automatiquement sur la carte suivante de la queue.
+function recordScanAdd(id, finish) {
+  const card = lastScanCards.find((c) => c.id === id);
+  if (!card) return;
+  const existing = scanSession.find((s) => s.id === id && s.finish === finish);
+  if (existing) existing.qty += 1;
+  else scanSession.push({ id, name: card.name, finish, qty: 1 });
+  renderScanSession();
+  scanIndex += 1;
+  setTimeout(loadScanQueueItem, 400);
+}
+
+function renderScanSession() {
+  const panel = $('#scan-session');
+  panel.hidden = scanSession.length === 0;
+  $('#scan-session-list').innerHTML = scanSession
+    .map((s) => `<div class="row"><span>${esc(s.name)} · ${esc(s.finish)}</span><span>${s.qty}×</span></div>`)
+    .join('');
+}
 
 // Découpe la zone choisie dans la photo source (pleine résolution) et l'agrandit
 // pour donner à l'OCR un texte net et grand, sans avoir eu besoin de zoomer au tir

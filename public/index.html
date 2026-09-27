@@ -25,12 +25,23 @@
   <main>
     <section id="scan" class="tab active">
       <p class="muted">Photographiez la carte entière, sans zoomer : ajustez ensuite le cadre sur le code imprimé en bas à gauche (ex. « UNL • 121/219 »).</p>
-      <label class="button">
-        Prendre une photo
-        <input id="scan-input" type="file" accept="image/*" capture="environment" hidden>
-      </label>
+      <div class="scan-buttons">
+        <label class="button">
+          Prendre une photo
+          <input id="scan-input" type="file" accept="image/*" capture="environment" hidden>
+        </label>
+        <label class="button secondary">
+          Scanner plusieurs cartes
+          <input id="scan-multi-input" type="file" accept="image/*" multiple hidden>
+        </label>
+      </div>
+      <p class="muted">« Scanner plusieurs cartes » : choisissez d'un coup, dans la galerie, toutes les photos déjà prises.</p>
 
       <div id="crop-tool" hidden>
+        <div id="crop-progress" class="progress-row" hidden>
+          <span id="crop-progress-label"></span>
+          <span id="crop-dots" class="dots"></span>
+        </div>
         <p class="muted">Faites glisser le cadre sur le code, puis ajustez sa taille avec le coin en bas à droite.</p>
         <div id="crop-stage">
           <canvas id="crop-canvas"></canvas>
@@ -40,11 +51,18 @@
         </div>
         <div class="crop-actions">
           <button id="crop-scan-btn" class="button">Scanner ce cadre</button>
-          <button id="crop-cancel-btn">Reprendre la photo</button>
+          <button id="crop-skip-btn" hidden>Passer cette carte →</button>
+          <button id="crop-cancel-btn">Annuler</button>
         </div>
       </div>
 
       <div id="scan-result"></div>
+
+      <div id="scan-session" hidden>
+        <h2>Session en cours</h2>
+        <div id="scan-session-list"></div>
+      </div>
+
       <h2>Recherche manuelle</h2>
       <input id="manual-search" type="search" placeholder="Nom ou code (ex. unl-121)">
       <div id="manual-result"></div>
