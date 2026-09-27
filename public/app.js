@@ -424,9 +424,25 @@ const RING_CIRCUMFERENCE = 88;
 $('#btn-open-camera').addEventListener('click', openCamera);
 $('#btn-close-camera').addEventListener('click', closeCamera);
 
+// Repli pour d'anciens navigateurs qui n'exposent pas encore
+// navigator.mediaDevices.getUserMedia (norme standard depuis 2017) mais une
+// variante préfixée. Sans ce repli, y accéder directement lève une TypeError
+// ("undefined is not an object") plutôt qu'un message compréhensible.
+function getCameraStream(constraints) {
+  if (navigator.mediaDevices?.getUserMedia) {
+    return navigator.mediaDevices.getUserMedia(constraints);
+  }
+  const legacy = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+  if (legacy) return new Promise((resolve, reject) => legacy.call(navigator, constraints, resolve, reject));
+  return Promise.reject(new Error(
+    "Ce navigateur ne permet pas l'accès à la caméra depuis un site web. " +
+    'Réessayez avec une version récente de Chrome ou Safari, sur https:// (obligatoire).',
+  ));
+}
+
 async function openCamera() {
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({
+    cameraStream = await getCameraStream({
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 1280 } },
       audio: false,
     });
