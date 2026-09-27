@@ -162,7 +162,7 @@ Docker (stack Portainer ou `.env` à côté de `docker-compose.yml`) et systemd 
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
-| `WEB_PORT` | `5901` | port publié sur l'hôte par le service `web` (le conteneur écoute en interne sur 3000) |
+| `WEB_PORT` | `5901` | port publié sur l'hôte par le service `web` (le conteneur écoute en interne sur `47582`, fixé dans l'image) |
 | `AUTH_USER` / `AUTH_PASSWORD` | vide | active l'authentification HTTP Basic |
 | `GIT_PUBLISH` | `1` | `1` = commit + push de `reports/` après chaque synchronisation |
 | `GIT_BRANCH` | `main` | branche de publication |
