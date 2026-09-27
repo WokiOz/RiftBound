@@ -3,21 +3,28 @@
 # puis lance la commande passée en argument (node server.js, ou la boucle de sync).
 set -e
 
+# known_hosts est rempli systématiquement, même sans clé : sinon "git clone"
+# échoue avec "Host key verification failed", un message qui ne dit pas que
+# c'est en fait la clé SSH qui manque (cause la plus fréquente, voir plus bas).
+mkdir -p "$HOME/.ssh"
+ssh-keyscan -t ed25519,rsa github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+
 # Clé privée : soit un fichier monté (secret Docker ou volume), soit son contenu
 # encodé en base64 dans GIT_SSH_KEY_B64 (pratique pour une stack Portainer liée
 # à ce dépôt Git, où aucun fichier local ne peut être ajouté à côté du compose).
 SSH_KEY_FILE="${GIT_SSH_KEY_FILE:-/run/secrets/git_ssh_key}"
 if [ -f "$SSH_KEY_FILE" ]; then
-  mkdir -p "$HOME/.ssh"
   cp "$SSH_KEY_FILE" "$HOME/.ssh/id_ed25519"
 elif [ -n "$GIT_SSH_KEY_B64" ]; then
-  mkdir -p "$HOME/.ssh"
   echo "$GIT_SSH_KEY_B64" | base64 -d > "$HOME/.ssh/id_ed25519"
 fi
 if [ -f "$HOME/.ssh/id_ed25519" ]; then
   chmod 600 "$HOME/.ssh/id_ed25519"
-  ssh-keyscan -t ed25519,rsa github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
   export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+elif [ "$GIT_PUBLISH" = "1" ] && [ -n "$GIT_REPO_URL" ]; then
+  echo "GIT_PUBLISH=1 et GIT_REPO_URL sont définis, mais aucune clé SSH n'a été trouvée" >&2
+  echo "(GIT_SSH_KEY_B64 est vide et $SSH_KEY_FILE est absent) : le clonage va échouer." >&2
+  echo "Vérifier la variable GIT_SSH_KEY_B64 de la stack." >&2
 fi
 
 git config --global user.name "${GIT_AUTHOR_NAME:-Riftbound bot}"
