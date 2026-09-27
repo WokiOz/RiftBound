@@ -206,6 +206,13 @@ L'inventaire (`inventory.json`) n'est pas versionné : à sauvegarder (volume `d
 
 Vérifié dans cette session : syntaxe du `Dockerfile`, des scripts `docker/*.sh`, et validité du `docker-compose.yml` (`docker compose config`). Le build de l'image elle-même n'a pas pu être exécuté ici (daemon Docker indisponible dans cet environnement) ; il l'est en revanche à chaque push par `.github/workflows/deploy.yml`, dont le succès est visible dans l'onglet *Actions* du dépôt.
 
-## Scan : ce qui a été vérifié
+## Scan : fonctionnement et ce qui a été vérifié
 
-Sur l'image officielle d'une carte, l'OCR lit `UNL • 121/219` et retrouve *Bewitching Spirit*. Sur une photo de téléphone, la réussite dépend de la netteté et de l'éclairage du code en bas à gauche ; en cas d'échec, utiliser la recherche manuelle (nom ou code).
+Le scan tente deux méthodes dans l'ordre :
+
+1. **Par le nom** (`POST /api/scan-name`) : OCR automatique sur la bande du nom (gros texte, juste sous l'illustration), sans action de l'utilisateur. `src/namesearch.js` ne renvoie une carte que si le nom identifie une carte de façon *certaine* (aucune autre carte du catalogue avec un nom aussi proche, et surtout aucune réimpression du même nom dans un autre set — fréquent dans ce jeu). Dans le doute, il ne répond rien plutôt que de risquer d'ajouter la mauvaise carte.
+2. **Par le code** (`POST /api/scan`, `src/cardcode.js`) : repli si la méthode par le nom échoue. L'utilisateur ajuste un cadre sur le petit code imprimé en bas à gauche (ex. `UNL • 121/219`), agrandi numériquement avant l'OCR.
+
+Une comparaison par empreinte visuelle de l'image entière (perceptual hash) a été testée et écartée : mesuré sur des cas réels, la distance entre la même carte photographiée avec du fond visible autour (32/64 bits) est aussi grande qu'entre deux cartes différentes (24 à 36/64 bits) — la technique ne tolère pas un cadrage imprécis, qui est pourtant la norme sur une photo prise à la main.
+
+Vérifié : sur l'image officielle d'une carte, l'OCR lit correctement le nom (reconnaissance immédiate, sans cadrage) et, en repli, le code `UNL • 121/219` (retrouve *Bewitching Spirit*). Sur une photo de téléphone, la réussite dépend de la netteté et de l'éclairage ; en dernier recours, utiliser la recherche manuelle (nom ou code).
