@@ -51,5 +51,21 @@ input, select { width: 100%; padding: 8px; margin: 4px 0; border-radius: 6px; bo
   background: var(--accent); border-radius: 50%; cursor: nwse-resize;
   border: 2px solid #111;
 }
-.crop-actions { display: flex; gap: 8px; margin-top: 10px; }
+.crop-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .crop-actions button { flex: 1; }
+
+.scan-buttons { display: flex; gap: 8px; }
+.scan-buttons .button { flex: 1; text-align: center; margin: 8px 0; }
+.button.secondary { background: var(--panel); color: var(--text); border: 1px solid #333; }
+
+.progress-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.progress-row .dots { display: flex; gap: 6px; }
+.progress-row .dots span { width: 7px; height: 7px; border-radius: 50%; background: #333; display: inline-block; }
+.progress-row .dots span.done { background: var(--ok); }
+.progress-row .dots span.now { background: var(--accent); }
+
+#scan-session { border-top: 1px solid #333; padding-top: 10px; margin-top: 6px; }
+#scan-session h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 8px; }
+#scan-session-list { display: flex; flex-direction: column; gap: 6px; }
+#scan-session-list .row { display: flex; justify-content: space-between; gap: 10px; font-size: 0.88rem; background: var(--panel); border-radius: 8px; padding: 7px 10px; }
+#scan-session-list .row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
