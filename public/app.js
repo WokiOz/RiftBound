@@ -413,6 +413,8 @@ let liveCameraActive = false;
 let cameraStream = null;
 let cameraWatchId = null;
 let cameraPrevSample = null;
+let cameraPrevMean = 0;
+let cameraDiffEma = null;
 let cameraProgressMs = 0; // "réserve" de stabilité, façon seau percé (voir watchCameraFrame)
 let cameraLastTs = null;
 const CAMERA_STABLE_MS = 550;
@@ -485,6 +487,7 @@ function armCameraWatch() {
   cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
   $('#camera-hint').textContent = 'Placez la carte dans le cadre';
   cameraPrevSample = null;
+  cameraDiffEma = null;
   cameraProgressMs = 0;
   cameraLastTs = null;
   cameraWatchId = requestAnimationFrame(watchCameraFrame);
@@ -528,13 +531,31 @@ function watchCameraFrame(ts) {
   for (let i = 0; i < sample.length; i += 4) variance += (sample[i] - mean) ** 2;
   variance /= sample.length / 4;
   if (cameraPrevSample) {
-    for (let i = 0; i < sample.length; i += 4) diff += Math.abs(sample[i] - cameraPrevSample[i]);
+    // Diff normalisée par la luminosité moyenne de chaque image, pas sur les
+    // valeurs brutes : l'exposition/balance des blancs automatique du
+    // téléphone fait dériver en continu la luminosité globale, même sans
+    // aucun mouvement, ce qui empêchait quasiment toujours la stabilité de
+    // s'établir. En comparant l'écart à la moyenne de chaque image (sa
+    // "structure"), ces dérives de luminosité globale n'affectent plus diff.
+    const prevMean = cameraPrevMean;
+    for (let i = 0; i < sample.length; i += 4) {
+      diff += Math.abs((sample[i] - mean) - (cameraPrevSample[i] - prevMean));
+    }
     diff /= sample.length / 4;
   }
   cameraPrevSample = sample;
+  cameraPrevMean = mean;
+
+  // Lissage exponentiel du signal de mouvement plutôt qu'un jugement image
+  // par image : une vraie caméra de téléphone a du bruit capteur et des
+  // micro-à-coups d'autofocus/exposition en continu, même totalement
+  // immobile. Juger chaque image isolément (même avec un seuil large)
+  // échoue presque toujours à un moment ou un autre. En lissant sur ~0.3s,
+  // ce bruit s'annule tout en restant sensible à un vrai mouvement soutenu.
+  cameraDiffEma = cameraDiffEma == null ? diff : cameraDiffEma * 0.85 + diff * 0.15;
 
   const hasContent = variance > 120; // pas juste une surface unie (table vide)
-  const isStable = diff < 14; // tolère un léger tremblement naturel de la main
+  const isStable = cameraDiffEma < 14;
 
   // "Seau percé" plutôt qu'un chrono qui repart de zéro au moindre à-coup :
   // un tremblement ponctuel fait juste redescendre un peu la jauge, elle ne
@@ -542,11 +563,15 @@ function watchCameraFrame(ts) {
   // légèrement, tout en repartant vraiment de zéro si la carte est retirée.
   if (!hasContent) cameraProgressMs = 0;
   else if (isStable) cameraProgressMs = Math.min(CAMERA_STABLE_MS, cameraProgressMs + dt);
-  else cameraProgressMs = Math.max(0, cameraProgressMs - dt * 1.5);
+  else cameraProgressMs = Math.max(0, cameraProgressMs - dt);
 
   cameraGuide.classList.toggle('aligned', cameraProgressMs > 0);
   cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - cameraProgressMs / CAMERA_STABLE_MS));
   $('#camera-hint').textContent = hasContent ? 'Ne bougez plus…' : 'Placez la carte dans le cadre';
+  // Repère de calibration : la valeur affichée quand la carte est immobile
+  // permet d'ajuster le seuil de stabilité au vu de vraies conditions
+  // (bruit capteur, éclairage) plutôt qu'en devinant.
+  $('#camera-debug').textContent = `mouvement: ${Math.round(cameraDiffEma ?? 0)} (seuil 14)`;
 
   if (cameraProgressMs >= CAMERA_STABLE_MS) {
     captureFromCamera();
