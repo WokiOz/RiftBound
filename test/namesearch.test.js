@@ -36,3 +36,17 @@ test('ignore les jetons de partie et le texte hors catalogue', () => {
   assert.strictEqual(matchByName(cards, 'Gold'), null);
   assert.strictEqual(matchByName(cards, 'zzzz qqqq wwww'), null);
 });
+
+test('trouve le nom au milieu d\'un bloc OCR bruité (cadrage imprécis, capture large)', () => {
+  const cards = [card('a', 'Solari Chief', 'OGN'), card('b', 'Bewitching Spirit', 'UNL')];
+  // Simule une capture large qui inclut de l'illustration/du texte de règle
+  // autour du nom, comme quand le cadrage réel n'est pas pixel-parfait
+  const noisy = 'xjk29 zoab UNIT MOUNT TARGON Solari Chief When you play me choose';
+  assert.strictEqual(matchByName(cards, noisy).id, 'a');
+});
+
+test('refuse toujours l\'ambiguïté multi-sets même noyée dans du bruit', () => {
+  const cards = [card('a', 'Voracious Gromp', 'UNL'), card('b', 'Voracious Gromp', 'OPP')];
+  const noisy = 'xjk29 zoab UNIT SOMETHING Voracious Gromp When you play me';
+  assert.strictEqual(matchByName(cards, noisy), null);
+});

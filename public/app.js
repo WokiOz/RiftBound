@@ -144,24 +144,28 @@ async function loadScanQueueItem() {
 // Traitement commun à une image capturée, quelle que soit sa provenance
 // (fichier choisi, ou frame gelée de la caméra en direct) : tentative
 // automatique par le nom, puis repli sur le cadrage manuel du code.
-async function processCapturedImage(source) {
+async function processCapturedImage(source, padded = false) {
   cropTool.hidden = true;
   $('#scan-result').innerHTML = '<p class="muted">Reconnaissance…</p>';
   try {
     cropBitmap = await createImageBitmap(source);
     drawCropStage(); // fonctionne même cropTool masqué (ne dépend pas de sa visibilité)
 
-    const card = await tryNameMatch();
+    const { card, text } = await tryNameMatch(padded);
     if (card) {
       lastScanCards = [card];
       $('#scan-result').innerHTML = `<p class="ok">Reconnue par le nom.</p><div id="scan-result-cards">${cardRow(card)}</div>`;
       return true;
     }
 
-    // Repli : cadrage manuel sur le code, comme avant
+    // Repli : cadrage manuel sur le code. On affiche ce que l'OCR a lu sur la
+    // bande du nom : utile pour comprendre pourquoi la reconnaissance
+    // automatique échoue (mauvais cadrage de cette zone, texte illisible...).
     cropTool.hidden = false;
     resetCropBox();
-    $('#scan-result').innerHTML = '';
+    $('#scan-result').innerHTML = text
+      ? `<p class="muted">Nom lu automatiquement : « ${esc(text)} » — pas de correspondance sûre. Ajustez le cadre sur le code ci-dessous.</p>`
+      : '<p class="muted">Aucun texte lisible sur la bande du nom. Ajustez le cadre sur le code ci-dessous.</p>';
     return false;
   } catch (err) {
     $('#scan-result').innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
@@ -310,18 +314,39 @@ function extractCrop() {
 // petit code. Ne renvoie une carte que si le serveur est sûr qu'un seul nom
 // du catalogue correspond (voir src/namesearch.js) ; sinon on se rabat sur
 // le cadrage manuel du code, inchangé.
-async function tryNameMatch() {
-  const nameRegion = {
-    x: cropCanvas.width * 0.06, y: cropCanvas.height * 0.545,
-    w: cropCanvas.width * 0.72, h: cropCanvas.height * 0.085,
-  };
-  try {
-    const { data } = await Tesseract.recognize(extractRegion(nameRegion), 'eng');
-    const r = await api('/api/scan-name', { method: 'POST', body: { text: data.text } });
-    return r.confident ? r.card : null;
-  } catch {
-    return null; // on se rabat silencieusement sur le cadrage manuel
+// Une zone LARGE dégrade l'OCR (Tesseract mélange plusieurs blocs visuels —
+// illustration, bandeau du nom, texte de règle — et perd le nom au milieu).
+// On garde donc des bandes étroites, de la même hauteur qu'une bonne lecture
+// (celle d'une photo de galerie, où la carte remplit tout le cadre), et on
+// en essaie plusieurs positions à la suite pour tolérer un cadrage caméra
+// imprécis, plutôt qu'une seule zone large et floue.
+const NAME_CANDIDATES_PLAIN = [{ x: 0.06, y: 0.545, w: 0.72, h: 0.085 }];
+// Une capture caméra inclut volontairement 25 % de marge (voir guideRect) :
+// la carte n'y occupe que le centre, donc la bande "remappée" équivalente
+// est plus haute (~0.53) et plus étroite ; plusieurs décalages verticaux
+// couvrent un gabarit visé à l'œil pas tout à fait précis.
+// Position calibrée en vérifiant l'image réellement capturée (voir le
+// commit) : 0,48 centre pile le bandeau du nom sur un cadrage bien aligné.
+const NAME_CANDIDATES_PADDED = [0.48, 0.40, 0.56, 0.32].map((y) => ({ x: 0.10, y, w: 0.70, h: 0.08 }));
+
+async function tryNameMatch(padded = false) {
+  const candidates = padded ? NAME_CANDIDATES_PADDED : NAME_CANDIDATES_PLAIN;
+  let lastText = '';
+  for (const region of candidates) {
+    const nameRegion = {
+      x: cropCanvas.width * region.x, y: cropCanvas.height * region.y,
+      w: cropCanvas.width * region.w, h: cropCanvas.height * region.h,
+    };
+    try {
+      const { data } = await Tesseract.recognize(extractRegion(nameRegion), 'eng');
+      lastText = data.text.trim();
+      const r = await api('/api/scan-name', { method: 'POST', body: { text: data.text } });
+      if (r.confident) return { card: r.card, text: lastText };
+    } catch (err) {
+      lastText = '';
+    }
   }
+  return { card: null, text: lastText };
 }
 
 window.addEventListener('resize', () => {
@@ -497,10 +522,20 @@ function armCameraWatch() {
 // image stable (main immobile) contenant quelque chose (pas juste le fond).
 // Position du gabarit dans le flux vidéo, en fraction de sa résolution :
 // mêmes proportions que le cadre affiché à l'écran (#camera-guide en CSS).
-function guideRect() {
+// `padding` (fraction de la largeur/hauteur du gabarit) élargit la zone
+// réellement capturée au-delà du gabarit affiché à l'écran : viser à l'œil
+// un cadre dessiné n'est jamais pixel-parfait, et un décalage important
+// peut couper une partie de la carte hors de la capture — aucune recherche
+// après coup ne peut retrouver une donnée qui n'a jamais été photographiée.
+function guideRect(padding = 0) {
   const vw = cameraVideo.videoWidth, vh = cameraVideo.videoHeight;
-  const w = vw * 0.64;
-  return { x: vw * 0.18, y: vh * 0.12, w, h: w / 0.716 };
+  const w = vw * 0.64, h = w / 0.716;
+  const x = vw * 0.18 - w * padding, y = vh * 0.12 - h * padding;
+  const pw = w * (1 + 2 * padding), ph = h * (1 + 2 * padding);
+  return {
+    x: Math.max(0, x), y: Math.max(0, y),
+    w: Math.min(pw, vw - Math.max(0, x)), h: Math.min(ph, vh - Math.max(0, y)),
+  };
 }
 
 function sampleGuideRegion() {
@@ -587,15 +622,16 @@ async function captureFromCamera() {
   $('#camera-hint').textContent = 'Capturé !';
   setTimeout(() => $('#camera-flash').classList.remove('go'), 350);
 
-  // Ne capture que la zone du gabarit (pas toute l'image caméra avec le fond
-  // autour) : le reste du pipeline (nom puis code) suppose une image où la
-  // carte occupe tout le cadre, comme une photo classique bien cadrée.
-  const g = guideRect();
+  // Capture un peu plus large que le gabarit affiché (25 % de marge de
+  // chaque côté) : viser à l'œil un cadre dessiné à l'écran n'est jamais
+  // parfait, cette marge évite de couper une partie de la carte hors de la
+  // capture quand l'alignement réel est légèrement décalé.
+  const g = guideRect(0.25);
   const canvas = document.createElement('canvas');
   canvas.width = g.w;
   canvas.height = g.h;
   canvas.getContext('2d').drawImage(cameraVideo, g.x, g.y, g.w, g.h, 0, 0, g.w, g.h);
-  await processCapturedImage(canvas);
+  await processCapturedImage(canvas, true); // capture avec marge : la carte n'occupe pas tout le cadre
 }
 
 loadStatus();

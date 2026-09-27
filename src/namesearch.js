@@ -38,6 +38,24 @@ function similarity(a, b) {
   return 1 - levenshtein(a, b) / maxLen;
 }
 
+// Cherche `target` comme sous-chaîne approximative dans `text`, plutôt que de
+// comparer tout le bloc OCR d'un coup. La zone photographiée capte souvent
+// plus que le seul nom (un peu d'illustration, le type de la carte, un bout
+// de texte en dessous...) : exiger que l'intégralité du bloc corresponde au
+// nom échouerait dès que le cadrage n'est pas pixel-parfait.
+function bestSubstringSimilarity(text, target) {
+  if (text.length <= target.length) return similarity(text, target);
+  const step = Math.max(1, Math.round(target.length / 8));
+  let best = 0;
+  for (let start = 0; start <= text.length - 1; start += step) {
+    const window = text.slice(start, start + target.length);
+    const s = similarity(window, target);
+    if (s > best) best = s;
+    if (best === 1) break;
+  }
+  return best;
+}
+
 // Une carte "utilisable" pour le scan (pas un jeton de partie)
 const isScannable = (c) => c.supertype !== 'Token';
 
@@ -57,7 +75,7 @@ function matchByName(cards, ocrText) {
   }
 
   const scored = [...groups.values()]
-    .map((g) => ({ g, score: similarity(query, g.key) }))
+    .map((g) => ({ g, score: bestSubstringSimilarity(query, g.key) }))
     .sort((a, b) => b.score - a.score);
 
   if (!scored.length) return null;
@@ -71,4 +89,4 @@ function matchByName(cards, ocrText) {
   return plain || best.g.cards[0];
 }
 
-module.exports = { matchByName, normalize, similarity };
+module.exports = { matchByName, normalize, similarity, bestSubstringSimilarity };
