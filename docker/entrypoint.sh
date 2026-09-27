@@ -25,10 +25,17 @@ git config --global user.email "${GIT_AUTHOR_EMAIL:-riftbound@localhost}"
 git config --global --add safe.directory "${GIT_REPO_DIR:-/app}"
 
 # web et sync partagent le même volume /repo et peuvent démarrer en même temps :
-# flock évite que les deux ne clonent en parallèle au premier démarrage.
+# flock évite que les deux ne clonent en parallèle au premier démarrage. Le verrou
+# est posé dans DATA_DIR (volume séparé), jamais dans GIT_REPO_DIR lui-même :
+# "git clone" refuse un dossier de destination non vide, y compris à cause d'un
+# simple fichier de verrou qu'on y aurait laissé.
 if [ "$GIT_PUBLISH" = "1" ] && [ -n "$GIT_REPO_URL" ]; then
-  mkdir -p "$GIT_REPO_DIR"
-  flock -w 120 "$GIT_REPO_DIR/.entrypoint.lock" -c \
+  DATA_DIR="${DATA_DIR:-/data}"
+  mkdir -p "$DATA_DIR" "$GIT_REPO_DIR"
+  # Nettoyage d'un verrou laissé par erreur dans GIT_REPO_DIR par une version
+  # antérieure de ce script (sinon le clone échoue indéfiniment).
+  rm -f "$GIT_REPO_DIR/.entrypoint.lock"
+  flock -w 120 "$DATA_DIR/.git-clone.lock" -c \
     "[ -d '$GIT_REPO_DIR/.git' ] || (echo 'Clonage de $GIT_REPO_URL dans $GIT_REPO_DIR' && git clone '$GIT_REPO_URL' '$GIT_REPO_DIR')"
 fi
 
