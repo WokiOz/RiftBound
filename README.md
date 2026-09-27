@@ -45,11 +45,14 @@ src/decks.js           construction des decks
 src/markdown.js        génération de reports/*.md
 src/publish.js         commit + push de reports/
 src/jobs.js            enchaînement sync → Markdown → push
-scripts/sync.js        point d'entrée du timer systemd
+scripts/sync.js        point d'entrée de la synchronisation (timer systemd ou boucle Docker)
 public/                interface web (HTML/CSS/JS, OCR via tesseract.js)
-deploy/                unités systemd et configuration nginx
-.github/workflows/     tests + déploiement SSH à chaque push sur main
-reports/               rapports Markdown générés (inventaire, prix, decks)
+Dockerfile              image Docker (voir GitHub Packages)
+docker/                 entrypoint et boucle de synchronisation de l'image
+docker-compose.yml      stack pour Portainer, basée sur l'image publiée
+deploy/                 alternative : unités systemd et configuration nginx
+.github/workflows/      tests + build/push de l'image Docker à chaque push sur main
+reports/                rapports Markdown générés (inventaire, prix, decks)
 ```
 
 ## Installation locale
@@ -63,74 +66,112 @@ npm start        # http://localhost:3000
 npm test
 ```
 
-## Déploiement sur le serveur
+## Déploiement avec Docker (Portainer)
 
-Exemple pour Debian/Ubuntu avec Node.js ≥ 20, nginx et git installés.
+L'image est construite et publiée automatiquement sur **GitHub Packages** (`ghcr.io/wokioz/riftbound`) par `.github/workflows/deploy.yml` à chaque push sur `main` : `:latest` pointe toujours vers la dernière version, et chaque build est aussi tagué avec le sha court du commit. Un tag Git `vX.Y.Z` publie en plus l'image sous ce numéro de version.
 
-**1. Utilisateur et code**
+La stack (`docker-compose.yml`) a deux services partageant les mêmes volumes :
+- **web** : sert le site, publié sur le port **5678** de l'hôte (`WEB_PORT`, configurable).
+- **sync** : relance `scripts/sync.js` toutes les `SYNC_INTERVAL_SECONDS` (24h par défaut).
+
+Les deux poussent les rapports sur GitHub via un clone Git conservé dans le volume `repo` (cloné automatiquement au premier démarrage). `docker-compose.yml` ne référence aucun fichier local : toute la config passe par des variables d'environnement, pour pouvoir lier la stack directement au dépôt Git dans Portainer.
+
+**1. Lier le dépôt dans Portainer**
+
+*Stacks → Add stack → Build method : Repository* :
+- **Repository URL** : `https://github.com/wokioz/riftbound` (ou l'URL de ton fork)
+- **Repository reference** : `refs/heads/main`
+- **Compose path** : `docker-compose.yml`
+
+Portainer clone le dépôt et déploie ce fichier tel quel, sans rien à copier à la main.
+
+**2. Deploy key GitHub (écriture)**
+
+```bash
+ssh-keygen -t ed25519 -N "" -f git_ssh_key
+base64 -w0 git_ssh_key    # à coller dans la variable GIT_SSH_KEY_B64
+cat git_ssh_key.pub       # à ajouter comme Deploy key
+```
+
+Ajouter la clé publique dans GitHub → *Settings → Deploy keys* du dépôt, **avec « Allow write access »** (nécessaire pour pousser les rapports). Ne jamais committer `git_ssh_key`.
+
+**3. Variables d'environnement de la stack**
+
+Dans l'éditeur de stack Portainer (section *Environment variables*), renseigner les variables listées dans `.env.example` — en particulier `GIT_SSH_KEY_B64` (coller le base64 de l'étape précédente) et `AUTH_PASSWORD` si utilisée, à marquer comme **sensibles**. Laisser `WEB_PORT` à `5678` ou le changer si ce port est déjà pris sur le serveur.
+
+**4. Package privé (si applicable)**
+
+Si le package `ghcr.io/wokioz/riftbound` est privé, connecter le serveur une fois :
+
+```bash
+echo <PAT avec le scope read:packages> | docker login ghcr.io -u <utilisateur> --password-stdin
+```
+
+Ou le rendre public depuis GitHub → l'onglet *Packages* du profil/organisation → *Package settings*.
+
+**5. Déployer**
+
+Bouton *Deploy the stack*. Le site est joignable sur `http://<serveur>:5678`.
+
+En ligne de commande (sans Portainer), copier `docker-compose.yml` et `.env.example` (renommé `.env`) côte à côte, puis :
+
+```bash
+docker compose up -d
+```
+
+**6. Mettre à jour**
+
+`:latest` est réécrit à chaque push sur `main`. Sur le serveur : bouton Portainer *Pull and redeploy* (ou `docker compose pull && docker compose up -d` en ligne de commande), ou l'agent [Watchtower](https://containrrr.dev/watchtower/) pour automatiser. Un push sur `main` ne redéploie pas la stack tout seul : Portainer republie la nouvelle image seulement quand on la lui demande (bouton, webhook, ou Watchtower).
+
+**HTTPS** : le service `web` n'expose que du HTTP. Passer par le reverse proxy déjà en place sur le serveur (nginx, Traefik, Nginx Proxy Manager…) pour le certificat, en le pointant vers le port `5678`. Obligatoire si `AUTH_USER`/`AUTH_PASSWORD` sont définis : en HTTP le mot de passe circule en clair.
+
+## Déploiement alternatif : systemd
+
+Sans Docker, sur Debian/Ubuntu avec Node.js ≥ 20, nginx et git installés. Voir `deploy/.env.example`, `deploy/riftbound.service`, `deploy/riftbound-sync.service`, `deploy/riftbound-sync.timer` et `deploy/nginx.conf`.
 
 ```bash
 sudo useradd --system --create-home --home-dir /home/riftbound riftbound
 sudo -u riftbound mkdir -m 700 /home/riftbound/.ssh
 sudo -u riftbound ssh-keygen -t ed25519 -N "" -f /home/riftbound/.ssh/id_ed25519
-sudo cat /home/riftbound/.ssh/id_ed25519.pub
-```
+sudo cat /home/riftbound/.ssh/id_ed25519.pub   # à ajouter en Deploy key GitHub, écriture activée
 
-Ajouter cette clé publique dans GitHub → *Settings → Deploy keys* du dépôt, **avec « Allow write access »** (nécessaire pour pousser les rapports).
-
-```bash
 sudo mkdir /opt/riftbound && sudo chown riftbound: /opt/riftbound
 sudo -u riftbound git clone git@github.com:wokioz/riftbound.git /opt/riftbound
 cd /opt/riftbound
 sudo -u riftbound git config user.name "Riftbound bot"
 sudo -u riftbound git config user.email "riftbound@localhost"
 sudo -u riftbound npm ci --omit=dev
-sudo -u riftbound cp .env.example .env   # puis éditer .env
-```
+sudo -u riftbound cp deploy/.env.example .env   # puis éditer .env
 
-**2. Services systemd**
-
-```bash
 sudo cp deploy/riftbound.service deploy/riftbound-sync.service deploy/riftbound-sync.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now riftbound riftbound-sync.timer
 sudo systemctl start riftbound-sync     # première synchronisation
-```
 
-**3. nginx + HTTPS**
-
-```bash
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/riftbound   # remplacer le server_name
 sudo ln -s /etc/nginx/sites-available/riftbound /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d riftbound.example.com
 ```
 
-HTTPS est nécessaire si `AUTH_USER`/`AUTH_PASSWORD` sont définis : en HTTP le mot de passe circule en clair.
-
-**4. Déploiement automatique depuis GitHub**
-
-Le workflow `.github/workflows/deploy.yml` lance les tests puis, sur `main`, se connecte en SSH et exécute `git pull`, `npm ci`, `systemctl restart riftbound`.
-
-Autoriser le redémarrage sans mot de passe (`sudo visudo -f /etc/sudoers.d/riftbound`) :
-
-```
-riftbound ALL=(root) NOPASSWD: /usr/bin/systemctl restart riftbound
-```
-
-Secrets à créer dans GitHub → *Settings → Secrets and variables → Actions* :
-
-| Secret | Valeur |
-| --- | --- |
-| `SSH_HOST` | adresse du serveur |
-| `SSH_PORT` | port SSH (22 par défaut) |
-| `SSH_USER` | `riftbound` |
-| `SSH_KEY` | clé privée dont la clé publique est dans `/home/riftbound/.ssh/authorized_keys` |
-| `APP_DIR` | `/opt/riftbound` (par défaut) |
-
-Les commits de rapports faits par le serveur contiennent `[skip ci]` et ne touchent que `reports/` : ils ne relancent pas le déploiement.
-
 ## Variables d'environnement
+
+Docker (stack Portainer ou `.env` à côté de `docker-compose.yml`) et systemd (`deploy/.env.example`) ont des variables différentes : Docker fixe `DATA_DIR=/data` et `GIT_REPO_DIR=/repo` dans l'image (volumes de la stack) et publie le port via `WEB_PORT`, pendant que systemd utilise `PORT`/`DATA_DIR` directement.
+
+**Docker** (`docker-compose.yml`, détail dans `.env.example`) :
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `WEB_PORT` | `5678` | port publié sur l'hôte par le service `web` (le conteneur écoute en interne sur 3000) |
+| `AUTH_USER` / `AUTH_PASSWORD` | vide | active l'authentification HTTP Basic |
+| `GIT_PUBLISH` | `1` | `1` = commit + push de `reports/` après chaque synchronisation |
+| `GIT_BRANCH` | `main` | branche de publication |
+| `GIT_REPO_URL` | `git@github.com:wokioz/riftbound.git` | dépôt cloné dans le volume `repo` au premier démarrage |
+| `GIT_SSH_KEY_B64` | vide | clé privée (Deploy key, écriture) encodée en base64 — variable à marquer « sensible » |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `Riftbound bot` / `riftbound@localhost` | identité des commits automatiques |
+| `SYNC_INTERVAL_SECONDS` | `86400` | intervalle du service `sync`, en secondes |
+
+**systemd** (`deploy/.env.example`) :
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
@@ -140,7 +181,7 @@ Les commits de rapports faits par le serveur contiennent `[skip ci]` et ne touch
 | `GIT_PUBLISH` | vide | `1` = commit + push de `reports/` après chaque synchronisation |
 | `GIT_BRANCH` | `main` | branche de publication |
 
-L'inventaire (`DATA_DIR/inventory.json`) n'est pas versionné : à sauvegarder.
+L'inventaire (`inventory.json`) n'est pas versionné : à sauvegarder (volume `data` en Docker, `DATA_DIR` en systemd).
 
 ## API
 
@@ -153,6 +194,17 @@ L'inventaire (`DATA_DIR/inventory.json`) n'est pas versionné : à sauvegarder.
 | POST | `/api/inventory` `{id, finish, delta}` | ajoute/retire des exemplaires |
 | GET | `/api/decks` | decks générés |
 | POST | `/api/sync` | synchronisation manuelle |
+
+## Image Docker
+
+`docker build .` produit une image `node:22-alpine` avec `git`, `openssh-client` et `util-linux` (pour `flock`). Elle tourne en utilisateur non-root (`node`). `ENTRYPOINT` (`docker/entrypoint.sh`) écrit la clé SSH depuis `GIT_SSH_KEY_B64` (ou un fichier monté via `GIT_SSH_KEY_FILE`/`/run/secrets/git_ssh_key`), configure l'identité Git, puis clone `GIT_REPO_URL` dans `GIT_REPO_DIR` (`/repo`) si absent, avant de lancer la commande :
+
+- par défaut : `node server.js` (service `web`) ;
+- avec `sh docker/sync-loop.sh` (service `sync`) : synchronisation immédiate puis toutes les `SYNC_INTERVAL_SECONDS`.
+
+`web` et `sync` partagent les volumes `data` (catalogue/prix/inventaire) et `repo` (clone Git) ; un verrou (`flock`) évite qu'ils clonent en même temps au premier démarrage.
+
+Vérifié dans cette session : syntaxe du `Dockerfile`, des scripts `docker/*.sh`, et validité du `docker-compose.yml` (`docker compose config`). Le build de l'image elle-même n'a pas pu être exécuté ici (daemon Docker indisponible dans cet environnement) ; il l'est en revanche à chaque push par `.github/workflows/deploy.yml`, dont le succès est visible dans l'onglet *Actions* du dépôt.
 
 ## Scan : ce qui a été vérifié
 
