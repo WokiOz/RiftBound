@@ -36,6 +36,12 @@ git config --global --add safe.directory "${GIT_REPO_DIR:-/app}"
 # est posé dans DATA_DIR (volume séparé), jamais dans GIT_REPO_DIR lui-même :
 # "git clone" refuse un dossier de destination non vide, y compris à cause d'un
 # simple fichier de verrou qu'on y aurait laissé.
+# Le clonage est fait au mieux : s'il échoue (clé absente/invalide, réseau...),
+# on continue quand même vers "exec $@" plutôt que de laisser "set -e" arrêter
+# tout le script ici. Sans ce garde-fou, un simple souci Git SSH empêchait
+# node server.js de démarrer, et donc le site entier de répondre (502 côté
+# reverse proxy), pour un problème qui ne devrait affecter que la publication
+# des rapports.
 if [ "$GIT_PUBLISH" = "1" ] && [ -n "$GIT_REPO_URL" ]; then
   DATA_DIR="${DATA_DIR:-/data}"
   mkdir -p "$DATA_DIR" "$GIT_REPO_DIR"
@@ -43,7 +49,8 @@ if [ "$GIT_PUBLISH" = "1" ] && [ -n "$GIT_REPO_URL" ]; then
   # antérieure de ce script (sinon le clone échoue indéfiniment).
   rm -f "$GIT_REPO_DIR/.entrypoint.lock"
   flock -w 120 "$DATA_DIR/.git-clone.lock" -c \
-    "[ -d '$GIT_REPO_DIR/.git' ] || (echo 'Clonage de $GIT_REPO_URL dans $GIT_REPO_DIR' && git clone '$GIT_REPO_URL' '$GIT_REPO_DIR')"
+    "[ -d '$GIT_REPO_DIR/.git' ] || (echo 'Clonage de $GIT_REPO_URL dans $GIT_REPO_DIR' && git clone '$GIT_REPO_URL' '$GIT_REPO_DIR')" \
+    || echo "Publication Git indisponible pour cette exécution (voir ci-dessus) : le site démarre quand même, seuls les rapports ne seront pas poussés." >&2
 fi
 
 exec "$@"
