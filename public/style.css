@@ -64,6 +64,31 @@ input, select { width: 100%; padding: 8px; margin: 4px 0; border-radius: 6px; bo
 .progress-row .dots span.done { background: var(--ok); }
 .progress-row .dots span.now { background: var(--accent); }
 
+#camera-stage {
+  position: relative; border-radius: 10px; overflow: hidden; background: #000;
+  aspect-ratio: 3 / 4; margin: 8px 0;
+}
+#camera-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+#camera-guide {
+  position: absolute; left: 18%; top: 12%; width: 64%; aspect-ratio: 0.716;
+  border: 3px dashed rgba(232,230,225,0.55); border-radius: 14px;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+#camera-guide.aligned { border-style: solid; border-color: var(--ok); box-shadow: 0 0 0 3px rgba(108,192,139,0.25); }
+#camera-guide .ring { position: absolute; right: -14px; top: -14px; width: 34px; height: 34px; }
+#camera-guide .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+#camera-guide .ring circle { fill: none; stroke-width: 4; }
+#camera-guide .ring .track { stroke: rgba(232,230,225,0.2); }
+#camera-guide .ring .fill { stroke: var(--ok); stroke-dasharray: 88; stroke-dashoffset: 88; transition: stroke-dashoffset 0.05s linear; }
+.cam-hint {
+  position: absolute; left: 0; right: 0; bottom: 10px; text-align: center;
+  font-size: 0.82rem; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,0.8); pointer-events: none;
+}
+.flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+.flash.go { animation: flash-anim 0.35s ease-out; }
+@keyframes flash-anim { 0% { opacity: 0.9; } 100% { opacity: 0; } }
+#btn-close-camera { width: 100%; margin-bottom: 8px; }
+
 #scan-session { border-top: 1px solid #333; padding-top: 10px; margin-top: 6px; }
 #scan-session h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 8px; }
 #scan-session-list { display: flex; flex-direction: column; gap: 6px; }

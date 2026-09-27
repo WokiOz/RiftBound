@@ -138,25 +138,34 @@ async function loadScanQueueItem() {
       .join('');
   }
   $('#crop-skip-btn').hidden = !multi;
+  await processCapturedImage(scanQueue[scanIndex]);
+}
+
+// Traitement commun à une image capturée, quelle que soit sa provenance
+// (fichier choisi, ou frame gelée de la caméra en direct) : tentative
+// automatique par le nom, puis repli sur le cadrage manuel du code.
+async function processCapturedImage(source) {
   cropTool.hidden = true;
   $('#scan-result').innerHTML = '<p class="muted">Reconnaissance…</p>';
   try {
-    cropBitmap = await createImageBitmap(scanQueue[scanIndex]);
+    cropBitmap = await createImageBitmap(source);
     drawCropStage(); // fonctionne même cropTool masqué (ne dépend pas de sa visibilité)
 
     const card = await tryNameMatch();
     if (card) {
       lastScanCards = [card];
       $('#scan-result').innerHTML = `<p class="ok">Reconnue par le nom.</p><div id="scan-result-cards">${cardRow(card)}</div>`;
-      return;
+      return true;
     }
 
     // Repli : cadrage manuel sur le code, comme avant
     cropTool.hidden = false;
     resetCropBox();
     $('#scan-result').innerHTML = '';
+    return false;
   } catch (err) {
     $('#scan-result').innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
+    return false;
   }
 }
 
@@ -229,6 +238,7 @@ $('#crop-cancel-btn').addEventListener('click', () => {
   cropTool.hidden = true;
   cropBitmap = null;
   scanQueue = [];
+  if (liveCameraActive) armCameraWatch();
 });
 
 $('#crop-scan-btn').addEventListener('click', async () => {
@@ -259,8 +269,12 @@ function recordScanAdd(id, finish) {
   if (existing) existing.qty += 1;
   else scanSession.push({ id, name: card.name, finish, qty: 1 });
   renderScanSession();
-  scanIndex += 1;
-  setTimeout(loadScanQueueItem, 400);
+  if (liveCameraActive) {
+    setTimeout(armCameraWatch, 400);
+  } else {
+    scanIndex += 1;
+    setTimeout(loadScanQueueItem, 400);
+  }
 }
 
 function renderScanSession() {
@@ -298,8 +312,8 @@ function extractCrop() {
 // le cadrage manuel du code, inchangé.
 async function tryNameMatch() {
   const nameRegion = {
-    x: cropCanvas.width * 0.09, y: cropCanvas.height * 0.565,
-    w: cropCanvas.width * 0.66, h: cropCanvas.height * 0.06,
+    x: cropCanvas.width * 0.06, y: cropCanvas.height * 0.545,
+    w: cropCanvas.width * 0.72, h: cropCanvas.height * 0.085,
   };
   try {
     const { data } = await Tesseract.recognize(extractRegion(nameRegion), 'eng');
@@ -386,5 +400,150 @@ async function loadCatalog() {
 $('#catalog-search').addEventListener('input', debounce(loadCatalog));
 $('#catalog-set').addEventListener('change', loadCatalog);
 $('#catalog-type').addEventListener('change', loadCatalog);
+
+// ---------- Caméra en direct ----------
+// Un gabarit à l'écran où aligner la carte, plutôt qu'un aller-retour vers
+// l'appli photo du téléphone : le cadrage devient cohérent à chaque scan,
+// ce qui rend la reconnaissance automatique par le nom bien plus fiable.
+// "Aligné" est une heuristique simple (image stable, pas juste du vide dans
+// le gabarit) et non une vraie détection de contours : en cas de capture un
+// peu prématurée, la reconnaissance échoue simplement et on retente — sans
+// risque d'ajouter la mauvaise carte (le filtre du nom reste strict).
+let liveCameraActive = false;
+let cameraStream = null;
+let cameraWatchId = null;
+let cameraPrevSample = null;
+let cameraStableSince = null;
+const CAMERA_STABLE_MS = 550;
+
+const cameraVideo = $('#camera-video');
+const cameraGuide = $('#camera-guide');
+const cameraRing = $('#camera-ring-fill');
+const RING_CIRCUMFERENCE = 88;
+
+$('#btn-open-camera').addEventListener('click', openCamera);
+$('#btn-close-camera').addEventListener('click', closeCamera);
+
+async function openCamera() {
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 1280 } },
+      audio: false,
+    });
+  } catch (err) {
+    alert(`Caméra indisponible : ${err.message}`);
+    return;
+  }
+  cameraVideo.srcObject = cameraStream;
+  await cameraVideo.play();
+  liveCameraActive = true;
+  $('#live-camera').hidden = false;
+  $('#btn-open-camera').hidden = true;
+  armCameraWatch();
+}
+
+function closeCamera() {
+  liveCameraActive = false;
+  if (cameraWatchId) cancelAnimationFrame(cameraWatchId);
+  cameraWatchId = null;
+  if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
+  cameraStream = null;
+  $('#live-camera').hidden = true;
+  $('#btn-open-camera').hidden = false;
+  cropTool.hidden = true;
+  $('#scan-result').innerHTML = '';
+}
+
+// (Re)démarre la surveillance du gabarit, prête pour la carte suivante.
+function armCameraWatch() {
+  if (!liveCameraActive) return;
+  cropTool.hidden = true;
+  $('#scan-result').innerHTML = '';
+  cameraGuide.classList.remove('aligned');
+  cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
+  $('#camera-hint').textContent = 'Placez la carte dans le cadre';
+  cameraPrevSample = null;
+  cameraStableSince = null;
+  cameraWatchId = requestAnimationFrame(watchCameraFrame);
+}
+
+// Échantillonne le gabarit en petite résolution (16×22) pour détecter une
+// image stable (main immobile) contenant quelque chose (pas juste le fond).
+// Position du gabarit dans le flux vidéo, en fraction de sa résolution :
+// mêmes proportions que le cadre affiché à l'écran (#camera-guide en CSS).
+function guideRect() {
+  const vw = cameraVideo.videoWidth, vh = cameraVideo.videoHeight;
+  const w = vw * 0.64;
+  return { x: vw * 0.18, y: vh * 0.12, w, h: w / 0.716 };
+}
+
+function sampleGuideRegion() {
+  if (!cameraVideo.videoWidth) return null;
+  const guide = guideRect();
+  const canvas = sampleGuideRegion.canvas || (sampleGuideRegion.canvas = document.createElement('canvas'));
+  canvas.width = 16;
+  canvas.height = 22;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(cameraVideo, guide.x, guide.y, guide.w, guide.h, 0, 0, 16, 22);
+  return ctx.getImageData(0, 0, 16, 22).data;
+}
+
+function watchCameraFrame() {
+  if (!liveCameraActive) return;
+  const sample = sampleGuideRegion();
+  if (!sample) {
+    cameraWatchId = requestAnimationFrame(watchCameraFrame);
+    return;
+  }
+  let variance = 0, diff = 0, mean = 0;
+  for (let i = 0; i < sample.length; i += 4) mean += sample[i];
+  mean /= sample.length / 4;
+  for (let i = 0; i < sample.length; i += 4) variance += (sample[i] - mean) ** 2;
+  variance /= sample.length / 4;
+  if (cameraPrevSample) {
+    for (let i = 0; i < sample.length; i += 4) diff += Math.abs(sample[i] - cameraPrevSample[i]);
+    diff /= sample.length / 4;
+  }
+  cameraPrevSample = sample;
+
+  const hasContent = variance > 120; // pas juste une surface unie (table vide)
+  const isStable = diff < 6;
+  const now = performance.now();
+
+  if (hasContent && isStable) {
+    if (!cameraStableSince) cameraStableSince = now;
+    const elapsed = now - cameraStableSince;
+    cameraGuide.classList.add('aligned');
+    cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - Math.min(1, elapsed / CAMERA_STABLE_MS)));
+    if (elapsed >= CAMERA_STABLE_MS) {
+      captureFromCamera();
+      return; // la surveillance reprendra via armCameraWatch()
+    }
+  } else {
+    cameraStableSince = null;
+    cameraGuide.classList.remove('aligned');
+    cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
+    $('#camera-hint').textContent = hasContent ? 'Ne bougez plus…' : 'Placez la carte dans le cadre';
+  }
+  cameraWatchId = requestAnimationFrame(watchCameraFrame);
+}
+
+async function captureFromCamera() {
+  if (cameraWatchId) cancelAnimationFrame(cameraWatchId);
+  cameraWatchId = null;
+  $('#camera-flash').classList.add('go');
+  $('#camera-hint').textContent = 'Capturé !';
+  setTimeout(() => $('#camera-flash').classList.remove('go'), 350);
+
+  // Ne capture que la zone du gabarit (pas toute l'image caméra avec le fond
+  // autour) : le reste du pipeline (nom puis code) suppose une image où la
+  // carte occupe tout le cadre, comme une photo classique bien cadrée.
+  const g = guideRect();
+  const canvas = document.createElement('canvas');
+  canvas.width = g.w;
+  canvas.height = g.h;
+  canvas.getContext('2d').drawImage(cameraVideo, g.x, g.y, g.w, g.h, 0, 0, g.w, g.h);
+  await processCapturedImage(canvas);
+}
 
 loadStatus();
