@@ -85,17 +85,106 @@ document.addEventListener('click', async (e) => {
   else btn.textContent = `✓ ${r.finish} (${r.qty})`;
 });
 
-// ---------- Scanner (OCR du code imprimé, dans le navigateur) ----------
+// ---------- Scanner (photo entière -> cadre de recadrage -> OCR sur le cadre) ----------
+// Le code imprimé occupe une toute petite partie de la carte : plutôt que de
+// demander un zoom téléphone extrême (flou, mise au point ratée), on prend la
+// carte entière puis on isole/agrandit numériquement la zone du code avant l'OCR.
+const cropTool = $('#crop-tool');
+const cropStage = $('#crop-stage');
+const cropCanvas = $('#crop-canvas');
+const cropBox = $('#crop-box');
+let cropBitmap = null; // photo source, pleine résolution
+
 $('#scan-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  const out = $('#scan-result');
-  out.innerHTML = '<p>Lecture de la carte…</p>';
   try {
-    const { data } = await Tesseract.recognize(await downscale(file), 'eng');
+    cropBitmap = await createImageBitmap(file);
+    // Rendre la section visible avant de mesurer sa largeur : un parent masqué
+    // (hidden) rapporte clientWidth = 0, ce qui faussait le calcul du canvas.
+    cropTool.hidden = false;
+    $('#scan-result').innerHTML = '';
+    drawCropStage();
+    resetCropBox();
+  } catch (err) {
+    $('#scan-result').innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
+  } finally {
+    e.target.value = '';
+  }
+});
+
+// Affiche la photo à une taille raisonnable pour l'écran (l'OCR se fera sur la
+// source pleine résolution, pas sur cet aperçu)
+function drawCropStage() {
+  // Calculé depuis window.innerWidth plutôt que via clientWidth d'un parent :
+  // un canvas plus large que l'écran élargit la page elle-même (main/#crop-tool
+  // n'ont pas de largeur fixe), ce qui fausserait une mesure par clientWidth.
+  const maxW = Math.min(window.innerWidth - 32, 600);
+  const scale = Math.min(1, maxW / cropBitmap.width);
+  cropCanvas.width = Math.round(cropBitmap.width * scale);
+  cropCanvas.height = Math.round(cropBitmap.height * scale);
+  cropCanvas.getContext('2d').drawImage(cropBitmap, 0, 0, cropCanvas.width, cropCanvas.height);
+}
+
+// Cadre par défaut : bande en bas à gauche, où se trouve le code sur une carte
+// Riftbound cadrée normalement. L'utilisateur l'ajuste ensuite si besoin.
+function resetCropBox() {
+  const w = cropCanvas.width * 0.4;
+  const h = cropCanvas.height * 0.09;
+  setCropBoxRect(cropCanvas.width * 0.04, cropCanvas.height * 0.88, w, h);
+}
+
+function setCropBoxRect(x, y, w, h) {
+  w = Math.max(24, Math.min(w, cropCanvas.width - x));
+  h = Math.max(16, Math.min(h, cropCanvas.height - y));
+  x = Math.max(0, Math.min(x, cropCanvas.width - w));
+  y = Math.max(0, Math.min(y, cropCanvas.height - h));
+  Object.assign(cropBox.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+}
+
+function cropBoxRect() {
+  return {
+    x: parseFloat(cropBox.style.left), y: parseFloat(cropBox.style.top),
+    w: parseFloat(cropBox.style.width), h: parseFloat(cropBox.style.height),
+  };
+}
+
+// Glisser-déposer (déplacer) et redimensionner (coin) du cadre, souris et tactile
+function dragToMove(e) {
+  e.preventDefault();
+  const start = cropBoxRect();
+  const p0 = { x: e.clientX, y: e.clientY };
+  const onMove = (ev) => setCropBoxRect(start.x + (ev.clientX - p0.x), start.y + (ev.clientY - p0.y), start.w, start.h);
+  const onUp = () => document.removeEventListener('pointermove', onMove);
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp, { once: true });
+}
+cropBox.addEventListener('pointerdown', dragToMove);
+
+$('#crop-handle').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const start = cropBoxRect();
+  const p0 = { x: e.clientX, y: e.clientY };
+  const onMove = (ev) => setCropBoxRect(start.x, start.y, start.w + (ev.clientX - p0.x), start.h + (ev.clientY - p0.y));
+  const onUp = () => document.removeEventListener('pointermove', onMove);
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp, { once: true });
+});
+
+$('#crop-cancel-btn').addEventListener('click', () => {
+  cropTool.hidden = true;
+  cropBitmap = null;
+});
+
+$('#crop-scan-btn').addEventListener('click', async () => {
+  const out = $('#scan-result');
+  out.innerHTML = '<p>Lecture du code…</p>';
+  try {
+    const { data } = await Tesseract.recognize(extractCrop(), 'eng');
     const r = await api('/api/scan', { method: 'POST', body: { text: data.text } });
     if (!r.code) {
-      out.innerHTML = '<p>Code non détecté. Reprenez la photo plus près du bas de la carte, ou utilisez la recherche manuelle.</p>';
+      out.innerHTML = '<p>Code non détecté. Ajustez le cadre bien sur le texte (ex. « UNL • 121/219 »), ou utilisez la recherche manuelle.</p>';
     } else if (!r.cards.length) {
       out.innerHTML = `<p>Code lu : ${esc(r.code.set)} ${r.code.number}/${r.code.total}, aucune carte correspondante.</p>`;
     } else {
@@ -103,21 +192,33 @@ $('#scan-input').addEventListener('change', async (e) => {
     }
   } catch (err) {
     out.innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
-  } finally {
-    e.target.value = '';
   }
 });
 
-// Réduit la photo (2000 px max) pour accélérer l'OCR sur téléphone
-async function downscale(file) {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
+// Découpe la zone choisie dans la photo source (pleine résolution) et l'agrandit
+// pour donner à l'OCR un texte net et grand, sans avoir eu besoin de zoomer au tir
+function extractCrop() {
+  const scale = cropBitmap.width / cropCanvas.width;
+  const r = cropBoxRect();
+  const sx = r.x * scale, sy = r.y * scale, sw = r.w * scale, sh = r.h * scale;
+  const targetW = Math.max(900, Math.round(sw * 3));
+  const targetH = Math.round((targetW / sw) * sh);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(cropBitmap, sx, sy, sw, sh, 0, 0, targetW, targetH);
   return canvas;
 }
+
+window.addEventListener('resize', () => {
+  if (!cropBitmap) return;
+  const prev = cropBoxRect();
+  const ratio = { x: prev.x / cropCanvas.width, y: prev.y / cropCanvas.height, w: prev.w / cropCanvas.width, h: prev.h / cropCanvas.height };
+  drawCropStage();
+  setCropBoxRect(ratio.x * cropCanvas.width, ratio.y * cropCanvas.height, ratio.w * cropCanvas.width, ratio.h * cropCanvas.height);
+});
 
 function debounce(fn, ms = 300) {
   let t;
