@@ -442,7 +442,15 @@ let cameraPrevMean = 0;
 let cameraDiffEma = null;
 let cameraProgressMs = 0; // "réserve" de stabilité, façon seau percé (voir watchCameraFrame)
 let cameraLastTs = null;
+let cameraContentSince = null; // depuis quand une carte est visible dans le gabarit
 const CAMERA_STABLE_MS = 550;
+// Délai incompressible avant toute capture, même si la main est stable dès
+// la première image : le téléphone a besoin d'un instant pour faire la mise
+// au point et ajuster l'exposition. Sans ça, on capture parfois pendant que
+// l'image est encore floue (l'autofocus n'a pas eu le temps de s'ajuster) —
+// ce qu'un humain évite naturellement en marquant une petite pause avant de
+// prendre la photo.
+const CAMERA_FOCUS_DELAY_MS = 900;
 
 const cameraVideo = $('#camera-video');
 const cameraGuide = $('#camera-guide');
@@ -515,6 +523,7 @@ function armCameraWatch() {
   cameraDiffEma = null;
   cameraProgressMs = 0;
   cameraLastTs = null;
+  cameraContentSince = null;
   cameraWatchId = requestAnimationFrame(watchCameraFrame);
 }
 
@@ -596,19 +605,27 @@ function watchCameraFrame(ts) {
   // un tremblement ponctuel fait juste redescendre un peu la jauge, elle ne
   // se vide pas d'un coup. Beaucoup plus tolérant à une main qui tremble
   // légèrement, tout en repartant vraiment de zéro si la carte est retirée.
-  if (!hasContent) cameraProgressMs = 0;
-  else if (isStable) cameraProgressMs = Math.min(CAMERA_STABLE_MS, cameraProgressMs + dt);
-  else cameraProgressMs = Math.max(0, cameraProgressMs - dt);
+  if (!hasContent) {
+    cameraProgressMs = 0;
+    cameraContentSince = null;
+  } else {
+    if (!cameraContentSince) cameraContentSince = ts;
+    if (isStable) cameraProgressMs = Math.min(CAMERA_STABLE_MS, cameraProgressMs + dt);
+    else cameraProgressMs = Math.max(0, cameraProgressMs - dt);
+  }
+  const focusReady = hasContent && ts - cameraContentSince >= CAMERA_FOCUS_DELAY_MS;
 
   cameraGuide.classList.toggle('aligned', cameraProgressMs > 0);
   cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - cameraProgressMs / CAMERA_STABLE_MS));
-  $('#camera-hint').textContent = hasContent ? 'Ne bougez plus…' : 'Placez la carte dans le cadre';
+  $('#camera-hint').textContent = !hasContent
+    ? 'Placez la carte dans le cadre'
+    : focusReady ? 'Ne bougez plus…' : 'Mise au point…';
   // Repère de calibration : la valeur affichée quand la carte est immobile
   // permet d'ajuster le seuil de stabilité au vu de vraies conditions
   // (bruit capteur, éclairage) plutôt qu'en devinant.
   $('#camera-debug').textContent = `mouvement: ${Math.round(cameraDiffEma ?? 0)} (seuil 14)`;
 
-  if (cameraProgressMs >= CAMERA_STABLE_MS) {
+  if (cameraProgressMs >= CAMERA_STABLE_MS && focusReady) {
     captureFromCamera();
     return; // la surveillance reprendra via armCameraWatch()
   }
