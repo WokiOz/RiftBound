@@ -8,6 +8,7 @@ const { runSync } = require('./src/jobs');
 const { priceOf } = require('./src/prices');
 const { buildDecks } = require('./src/decks');
 const { parsePrintedCode, findByCode } = require('./src/cardcode');
+const { matchByName } = require('./src/namesearch');
 
 let cards = [];
 let prices = {};
@@ -87,6 +88,13 @@ app.post('/api/scan', (req, res) => {
   const code = parsePrintedCode(String(req.body.text || ''));
   if (!code) return res.json({ code: null, cards: [] });
   res.json({ code, cards: findByCode(cards, code).map(withPrices) });
+});
+
+// Identification rapide par le nom (gros texte, plus facile à lire par l'OCR
+// que le petit code). Volontairement strict : voir src/namesearch.js.
+app.post('/api/scan-name', (req, res) => {
+  const card = matchByName(cards, String(req.body.text || ''));
+  res.json(card ? { confident: true, card: withPrices(card) } : { confident: false });
 });
 
 app.get('/api/inventory', (req, res) => {

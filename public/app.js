@@ -138,14 +138,23 @@ async function loadScanQueueItem() {
       .join('');
   }
   $('#crop-skip-btn').hidden = !multi;
-  $('#scan-result').innerHTML = '';
+  cropTool.hidden = true;
+  $('#scan-result').innerHTML = '<p class="muted">Reconnaissance…</p>';
   try {
     cropBitmap = await createImageBitmap(scanQueue[scanIndex]);
-    // Rendre la section visible avant de mesurer sa largeur : un parent masqué
-    // (hidden) rapporte clientWidth = 0, ce qui faussait le calcul du canvas.
+    drawCropStage(); // fonctionne même cropTool masqué (ne dépend pas de sa visibilité)
+
+    const card = await tryNameMatch();
+    if (card) {
+      lastScanCards = [card];
+      $('#scan-result').innerHTML = `<p class="ok">Reconnue par le nom.</p><div id="scan-result-cards">${cardRow(card)}</div>`;
+      return;
+    }
+
+    // Repli : cadrage manuel sur le code, comme avant
     cropTool.hidden = false;
-    drawCropStage();
     resetCropBox();
+    $('#scan-result').innerHTML = '';
   } catch (err) {
     $('#scan-result').innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
   }
@@ -264,9 +273,8 @@ function renderScanSession() {
 
 // Découpe la zone choisie dans la photo source (pleine résolution) et l'agrandit
 // pour donner à l'OCR un texte net et grand, sans avoir eu besoin de zoomer au tir
-function extractCrop() {
+function extractRegion(r) {
   const scale = cropBitmap.width / cropCanvas.width;
-  const r = cropBoxRect();
   const sx = r.x * scale, sy = r.y * scale, sw = r.w * scale, sh = r.h * scale;
   const targetW = Math.max(900, Math.round(sw * 3));
   const targetH = Math.round((targetW / sw) * sh);
@@ -277,6 +285,29 @@ function extractCrop() {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(cropBitmap, sx, sy, sw, sh, 0, 0, targetW, targetH);
   return canvas;
+}
+
+function extractCrop() {
+  return extractRegion(cropBoxRect());
+}
+
+// Tentative automatique, sans intervention : le nom de la carte (gros texte,
+// juste sous l'illustration) est bien plus facile à lire par l'OCR que le
+// petit code. Ne renvoie une carte que si le serveur est sûr qu'un seul nom
+// du catalogue correspond (voir src/namesearch.js) ; sinon on se rabat sur
+// le cadrage manuel du code, inchangé.
+async function tryNameMatch() {
+  const nameRegion = {
+    x: cropCanvas.width * 0.09, y: cropCanvas.height * 0.565,
+    w: cropCanvas.width * 0.66, h: cropCanvas.height * 0.06,
+  };
+  try {
+    const { data } = await Tesseract.recognize(extractRegion(nameRegion), 'eng');
+    const r = await api('/api/scan-name', { method: 'POST', body: { text: data.text } });
+    return r.confident ? r.card : null;
+  } catch {
+    return null; // on se rabat silencieusement sur le cadrage manuel
+  }
 }
 
 window.addEventListener('resize', () => {
