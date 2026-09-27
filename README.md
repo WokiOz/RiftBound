@@ -71,7 +71,7 @@ npm test
 L'image est construite et publiée automatiquement sur **GitHub Packages** (`ghcr.io/wokioz/riftbound`) par `.github/workflows/deploy.yml` à chaque push sur `main` : `:latest` pointe toujours vers la dernière version, et chaque build est aussi tagué avec le sha court du commit. Un tag Git `vX.Y.Z` publie en plus l'image sous ce numéro de version.
 
 La stack (`docker-compose.yml`) a deux services partageant les mêmes volumes :
-- **web** : sert le site, publié sur le port **5678** de l'hôte (`WEB_PORT`, configurable).
+- **web** : sert le site, publié sur le port **5901** de l'hôte (`WEB_PORT`, configurable).
 - **sync** : relance `scripts/sync.js` toutes les `SYNC_INTERVAL_SECONDS` (24h par défaut).
 
 Les deux poussent les rapports sur GitHub via un clone Git conservé dans le volume `repo` (cloné automatiquement au premier démarrage). `docker-compose.yml` ne référence aucun fichier local : toute la config passe par des variables d'environnement, pour pouvoir lier la stack directement au dépôt Git dans Portainer.
@@ -97,7 +97,7 @@ Ajouter la clé publique dans GitHub → *Settings → Deploy keys* du dépôt, 
 
 **3. Variables d'environnement de la stack**
 
-Dans l'éditeur de stack Portainer (section *Environment variables*), renseigner les variables listées dans `.env.example` — en particulier `GIT_SSH_KEY_B64` (coller le base64 de l'étape précédente) et `AUTH_PASSWORD` si utilisée, à marquer comme **sensibles**. Laisser `WEB_PORT` à `5678` ou le changer si ce port est déjà pris sur le serveur.
+Dans l'éditeur de stack Portainer (section *Environment variables*), renseigner les variables listées dans `.env.example` — en particulier `GIT_SSH_KEY_B64` (coller le base64 de l'étape précédente) et `AUTH_PASSWORD` si utilisée, à marquer comme **sensibles**. Laisser `WEB_PORT` à `5901` ou le changer si ce port est déjà pris sur le serveur.
 
 **4. Package privé (si applicable)**
 
@@ -111,7 +111,7 @@ Ou le rendre public depuis GitHub → l'onglet *Packages* du profil/organisation
 
 **5. Déployer**
 
-Bouton *Deploy the stack*. Le site est joignable sur `http://<serveur>:5678`.
+Bouton *Deploy the stack*. Le site est joignable sur `http://<serveur>:5901`.
 
 En ligne de commande (sans Portainer), copier `docker-compose.yml` et `.env.example` (renommé `.env`) côte à côte, puis :
 
@@ -123,7 +123,7 @@ docker compose up -d
 
 `:latest` est réécrit à chaque push sur `main`. Sur le serveur : bouton Portainer *Pull and redeploy* (ou `docker compose pull && docker compose up -d` en ligne de commande), ou l'agent [Watchtower](https://containrrr.dev/watchtower/) pour automatiser. Un push sur `main` ne redéploie pas la stack tout seul : Portainer republie la nouvelle image seulement quand on la lui demande (bouton, webhook, ou Watchtower).
 
-**HTTPS** : le service `web` n'expose que du HTTP. Passer par le reverse proxy déjà en place sur le serveur (nginx, Traefik, Nginx Proxy Manager…) pour le certificat, en le pointant vers le port `5678`. Obligatoire si `AUTH_USER`/`AUTH_PASSWORD` sont définis : en HTTP le mot de passe circule en clair.
+**HTTPS** : le service `web` n'expose que du HTTP. Passer par le reverse proxy déjà en place sur le serveur (nginx, Traefik, Nginx Proxy Manager…) pour le certificat, en le pointant vers le port `5901`. Obligatoire si `AUTH_USER`/`AUTH_PASSWORD` sont définis : en HTTP le mot de passe circule en clair.
 
 ## Déploiement alternatif : systemd
 
@@ -162,7 +162,7 @@ Docker (stack Portainer ou `.env` à côté de `docker-compose.yml`) et systemd 
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
-| `WEB_PORT` | `5678` | port publié sur l'hôte par le service `web` (le conteneur écoute en interne sur 3000) |
+| `WEB_PORT` | `5901` | port publié sur l'hôte par le service `web` (le conteneur écoute en interne sur 3000) |
 | `AUTH_USER` / `AUTH_PASSWORD` | vide | active l'authentification HTTP Basic |
 | `GIT_PUBLISH` | `1` | `1` = commit + push de `reports/` après chaque synchronisation |
 | `GIT_BRANCH` | `main` | branche de publication |
