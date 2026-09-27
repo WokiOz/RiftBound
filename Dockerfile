@@ -8,7 +8,8 @@ WORKDIR /app
 ENV HOME=/home/node \
     NODE_ENV=production \
     DATA_DIR=/data \
-    GIT_REPO_DIR=/repo
+    GIT_REPO_DIR=/repo \
+    PORT=47582
 
 COPY package*.json ./
 RUN npm ci --omit=dev
@@ -24,7 +25,7 @@ RUN chmod +x /entrypoint.sh docker/sync-loop.sh \
     && chown -R node:node /app /data /repo /home/node
 
 USER node
-EXPOSE 3000
+EXPOSE 47582
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "server.js"]
