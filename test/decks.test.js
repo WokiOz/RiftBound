@@ -21,7 +21,9 @@ test('construit un deck complet et légal', () => {
     'fury-rune': { normal: 8 }, 'order-rune': { normal: 6 }, 'bf-0': { normal: 1 }, 'bf-1': { normal: 1 }, 'bf-2': { normal: 2 } };
   for (let i = 0; i < 13; i++) inventory[`unit-${i}`] = { normal: 4 };
 
-  const [deck] = buildDecks(cards, inventory, { byProduct: {} });
+  const [{ variants }] = buildDecks(cards, inventory, { byProduct: {} });
+  assert.strictEqual(variants.length, 1, 'un seul champion possédé = une seule variante');
+  const { deck } = variants[0];
   assert.strictEqual(deck.champion, 'vi-champion');
   assert.strictEqual(deck.counts.main, 40);
   assert.ok(deck.main.every((m) => m.qty <= 3));
@@ -34,7 +36,8 @@ test('construit un deck complet et légal', () => {
 test('propose les cartes manquantes les moins chères', () => {
   const priced = cards.map((c, i) => ({ ...c, tcgplayerId: i + 1 }));
   const byProduct = Object.fromEntries(priced.map((c) => [c.tcgplayerId, { normal: { market: c.tcgplayerId / 10 } }]));
-  const [deck] = buildDecks(priced, { 'vi-legend': { normal: 1 } }, { byProduct });
+  const [{ variants }] = buildDecks(priced, { 'vi-legend': { normal: 1 } }, { byProduct });
+  const { deck } = variants[0];
   assert.strictEqual(deck.complete, false);
   assert.strictEqual(deck.toBuy[0].name, 'vi-champion');
   const mainToBuy = deck.toBuy.filter((b) => /^(unit|vi-champion)/.test(b.name));
@@ -42,4 +45,20 @@ test('propose les cartes manquantes les moins chères', () => {
   const championCopies = mainToBuy.filter((b) => b.name === 'vi-champion').reduce((a, b) => a + b.qty, 0);
   assert.ok(championCopies <= 3, 'limite de 3 exemplaires');
   assert.ok(deck.toBuyTotal > 0);
+});
+
+test('propose une variante par champion possédé', () => {
+  const withSecondChampion = [
+    ...cards,
+    card('vi-champion-2', 'Unit', { baseName: 'vi-champion-2', supertype: 'Champion', tags: ['Vi'], domains: ['Order'] }),
+  ];
+  const inventory = { 'vi-legend': { normal: 1 }, 'vi-champion': { normal: 3 }, 'vi-champion-2': { normal: 1 },
+    'fury-rune': { normal: 8 }, 'order-rune': { normal: 6 }, 'bf-0': { normal: 1 }, 'bf-1': { normal: 1 }, 'bf-2': { normal: 2 } };
+  for (let i = 0; i < 13; i++) inventory[`unit-${i}`] = { normal: 4 };
+
+  const [{ variants }] = buildDecks(withSecondChampion, inventory, { byProduct: {} });
+  assert.strictEqual(variants.length, 2);
+  assert.strictEqual(variants[0].isDefault, true);
+  assert.strictEqual(variants[0].deck.champion, 'vi-champion', 'le plus possédé est la variante par défaut');
+  assert.strictEqual(variants[1].deck.champion, 'vi-champion-2');
 });
