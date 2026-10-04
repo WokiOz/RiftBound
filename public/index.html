@@ -24,7 +24,7 @@
 
   <main>
     <section id="scan" class="tab active">
-      <p class="muted">Caméra en direct : rapprochez le téléphone du code imprimé en bas à gauche de la carte (ex. « UNL • 121/219 ») jusqu'à ce qu'il remplisse le cadre — reconnu automatiquement, quelle que soit la langue de la carte.</p>
+      <p class="muted">L'appli essaie d'abord de reconnaître la carte par son nom ; si ça ne suffit pas, ajustez le cadre sur le code imprimé en bas à gauche (ex. « UNL • 121/219 »).</p>
 
       <button id="btn-open-camera" class="button block">Caméra en direct</button>
 
@@ -34,7 +34,7 @@
           <div id="camera-guide">
             <div class="ring"><svg viewBox="0 0 34 34"><circle class="track" cx="17" cy="17" r="14"/><circle class="fill" id="camera-ring-fill" cx="17" cy="17" r="14"/></svg></div>
           </div>
-          <div id="camera-hint" class="cam-hint">Alignez le code imprimé dans le cadre</div>
+          <div id="camera-hint" class="cam-hint">Placez la carte dans le cadre</div>
           <div id="camera-debug"></div>
           <div id="camera-flash" class="flash"></div>
         </div>
@@ -44,7 +44,6 @@
         </div>
       </div>
 
-      <p class="muted">Ou, pour une carte imprimée en anglais, une photo de la carte entière (reconnaissance par le nom) :</p>
       <div class="scan-buttons">
         <label class="button secondary">
           Prendre une photo
