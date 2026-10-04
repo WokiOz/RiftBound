@@ -385,9 +385,33 @@ function extractRegion(r, zoom = 3) {
 // qu'un seuillage noir/blanc strict : améliore toujours la lisibilité sans
 // risquer de perdre des caractères fins si le seuil choisi est mauvais.
 function preprocessForOcr(canvas) {
+  // Masque flou inversé (unsharp mask) : accentue les transitions en
+  // soustrayant une version floutée de l'image à elle-même, ce qui ne
+  // corrige pas un vrai flou de mise au point (l'information fine est
+  // perdue, impossible à inventer) mais aide sur un flou léger en
+  // accentuant les contours encore présents. Testé empiriquement contre
+  // des images synthétiques à flou croissant (voir le commit) : repousse
+  // le seuil où l'OCR décroche, sans le faire disparaître.
   const ctx = canvas.getContext('2d');
+  const blurred = document.createElement('canvas');
+  blurred.width = canvas.width;
+  blurred.height = canvas.height;
+  const bctx = blurred.getContext('2d');
+  bctx.filter = 'blur(4px)';
+  bctx.drawImage(canvas, 0, 0);
+
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d = img.data;
+  const blurImg = bctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data, bd = blurImg.data;
+  const amount = 4;
+  for (let i = 0; i < d.length; i += 4) {
+    for (let c = 0; c < 3; c++) {
+      d[i + c] = Math.max(0, Math.min(255, d[i + c] + amount * (d[i + c] - bd[i + c])));
+    }
+  }
+
+  // Niveaux de gris + étirement de contraste (min/max de la zone ramenés à
+  // 0-255), sur l'image déjà renforcée ci-dessus.
   let min = 255, max = 0;
   for (let i = 0; i < d.length; i += 4) {
     const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
