@@ -152,6 +152,18 @@ async function processCapturedImage(source, padded = false) {
     cropBitmap = await createImageBitmap(source);
     drawCropStage(); // fonctionne même cropTool masqué (ne dépend pas de sa visibilité)
 
+    // Le code imprimé (ex. « OGN • 269/298 ») identifie la carte indépendamment
+    // de sa langue d'impression, contrairement au nom : le catalogue (API
+    // Riftcodex) n'existe qu'en anglais, donc une carte imprimée en français,
+    // allemand, etc. ne pourra JAMAIS être reconnue par son nom, même avec
+    // une photo parfaite. On essaie donc le code en premier.
+    const codeResult = await tryCodeMatch(padded);
+    if (codeResult.cards.length) {
+      lastScanCards = codeResult.cards;
+      $('#scan-result').innerHTML = `<p class="ok">Reconnue par le code (${esc(codeResult.code.set)} ${codeResult.code.number}/${codeResult.code.total}).</p><div id="scan-result-cards">${codeResult.cards.map(cardRow).join('')}</div>`;
+      return true;
+    }
+
     const { card, text } = await tryNameMatch(padded);
     if (card) {
       lastScanCards = [card];
@@ -159,14 +171,22 @@ async function processCapturedImage(source, padded = false) {
       return true;
     }
 
-    // Repli : cadrage manuel sur le code. On affiche ce que l'OCR a lu sur la
-    // bande du nom : utile pour comprendre pourquoi la reconnaissance
-    // automatique échoue (mauvais cadrage de cette zone, texte illisible...).
+    // Repli : cadrage manuel sur le code. On affiche ce que l'OCR a lu
+    // (nom et/ou code) : utile pour comprendre pourquoi la reconnaissance
+    // automatique échoue (mauvais cadrage, texte illisible, carte dans une
+    // langue sans correspondance possible par le nom...).
     cropTool.hidden = false;
     resetCropBox();
-    $('#scan-result').innerHTML = text
-      ? `<p class="muted">Nom lu automatiquement : « ${esc(text)} » — pas de correspondance sûre. Ajustez le cadre sur le code ci-dessous.</p>`
-      : '<p class="muted">Aucun texte lisible sur la bande du nom. Ajustez le cadre sur le code ci-dessous.</p>';
+    const hints = [
+      text && `nom lu : « ${esc(text)} »`,
+      codeResult.text && `code lu : « ${esc(codeResult.text)} »`,
+    ].filter(Boolean);
+    const langNote = text && !codeResult.cards.length
+      ? ' Si la carte n\'est pas imprimée en anglais, seul le code permet de la reconnaître automatiquement.'
+      : '';
+    $('#scan-result').innerHTML = hints.length
+      ? `<p class="muted">Pas de correspondance sûre (${hints.join(' — ')}).${langNote} Ajustez le cadre sur le code ci-dessous.</p>`
+      : '<p class="muted">Aucun texte lisible automatiquement. Ajustez le cadre sur le code ci-dessous.</p>';
     return false;
   } catch (err) {
     $('#scan-result').innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
@@ -291,11 +311,12 @@ function renderScanSession() {
 }
 
 // Découpe la zone choisie dans la photo source (pleine résolution) et l'agrandit
-// pour donner à l'OCR un texte net et grand, sans avoir eu besoin de zoomer au tir
-function extractRegion(r) {
+// pour donner à l'OCR un texte net et grand, sans avoir eu besoin de zoomer au tir.
+// `zoom` plus élevé pour le code imprimé (texte bien plus petit que le nom).
+function extractRegion(r, zoom = 3) {
   const scale = cropBitmap.width / cropCanvas.width;
   const sx = r.x * scale, sy = r.y * scale, sw = r.w * scale, sh = r.h * scale;
-  const targetW = Math.max(900, Math.round(sw * 3));
+  const targetW = Math.max(900, Math.round(sw * zoom));
   const targetH = Math.round((targetW / sw) * sh);
   const canvas = document.createElement('canvas');
   canvas.width = targetW;
@@ -329,6 +350,49 @@ const NAME_CANDIDATES_PLAIN = [{ x: 0.06, y: 0.545, w: 0.72, h: 0.085 }];
 // Position calibrée en vérifiant l'image réellement capturée (voir le
 // commit) : 0,48 centre pile le bandeau du nom sur un cadrage bien aligné.
 const NAME_CANDIDATES_PADDED = [0.48, 0.40, 0.56, 0.32].map((y) => ({ x: 0.10, y, w: 0.70, h: 0.08 }));
+
+// Le code imprimé (ex. « OGN • 269/298 ») est une toute petite bande tout en
+// bas à gauche de la carte — bien plus petite que le nom, d'où un zoom OCR
+// plus agressif (voir extractRegion) et plusieurs positions candidates pour
+// tolérer l'imprécision de cadrage. Point de départ : la position par défaut
+// du cadre manuel (resetCropBox, mesurée sur une image de référence),
+// avec quelques variantes autour.
+const CODE_CANDIDATES_PLAIN = [
+  { x: 0.02, y: 0.94, w: 0.46, h: 0.05 },
+  { x: 0.02, y: 0.925, w: 0.46, h: 0.06 },
+  { x: 0.02, y: 0.955, w: 0.46, h: 0.04 },
+];
+// Conversion de la position "pleine carte" ci-dessus vers les coordonnées
+// d'une capture caméra avec marge (guideRect(0.25) : la carte occupe le
+// centre 1/1.5 du cadre capturé, décalée de 0.25/1.5 ≈ 0.167 de chaque côté).
+// Non calibré visuellement (contrairement à NAME_CANDIDATES_PADDED en son
+// temps) : à ajuster si besoin au vu de captures réelles.
+const CODE_CANDIDATES_PADDED = [
+  { x: 0.18, y: 0.793, w: 0.32, h: 0.035 },
+  { x: 0.18, y: 0.760, w: 0.32, h: 0.045 },
+  { x: 0.18, y: 0.825, w: 0.32, h: 0.045 },
+  { x: 0.15, y: 0.793, w: 0.38, h: 0.045 },
+];
+
+async function tryCodeMatch(padded = false) {
+  const candidates = padded ? CODE_CANDIDATES_PADDED : CODE_CANDIDATES_PLAIN;
+  let lastText = '';
+  for (const region of candidates) {
+    const rect = {
+      x: cropCanvas.width * region.x, y: cropCanvas.height * region.y,
+      w: cropCanvas.width * region.w, h: cropCanvas.height * region.h,
+    };
+    try {
+      const { data } = await Tesseract.recognize(extractRegion(rect, 6), 'eng');
+      lastText = data.text.trim();
+      const r = await api('/api/scan', { method: 'POST', body: { text: data.text } });
+      if (r.code && r.cards.length) return { cards: r.cards, code: r.code, text: lastText };
+    } catch (err) {
+      lastText = '';
+    }
+  }
+  return { cards: [], code: null, text: lastText };
+}
 
 async function tryNameMatch(padded = false) {
   const candidates = padded ? NAME_CANDIDATES_PADDED : NAME_CANDIDATES_PLAIN;
@@ -546,7 +610,12 @@ function getCameraStream(constraints) {
 async function openCamera() {
   try {
     cameraStream = await getCameraStream({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 1280 } },
+      // Résolution plus haute que la précédente (1280) : le code imprimé est
+      // minuscule, donc chaque pixel de résolution native compte bien plus
+      // pour sa lisibilité que pour le gros nom de la carte. Le navigateur
+      // retombe automatiquement sur le maximum supporté par l'appareil si
+      // 2560 n'est pas atteignable (c'est un "ideal", pas une exigence stricte).
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 2560 } },
       audio: false,
     });
   } catch (err) {
