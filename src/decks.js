@@ -61,7 +61,9 @@ function suggest(groups, qtyNeeded, alreadyUsed = new Map()) {
   return out;
 }
 
-function buildDeck(legend, cards, inventory, prices) {
+// `forcedChampionName` impose le Chosen Champion (pour proposer une variante
+// par champion possédé) au lieu de prendre automatiquement le plus possédé.
+function buildDeck(legend, cards, inventory, prices, forcedChampionName = null) {
   const tags = legend.tags;
   const domains = legend.domains;
   const playable = cards.filter((c) => c.supertype !== 'Token');
@@ -84,9 +86,11 @@ function buildDeck(legend, cards, inventory, prices) {
   };
   const total = () => [...main.values()].reduce((a, b) => a + b, 0);
 
-  // 1. Chosen Champion : le champion possédé en plus grand nombre
+  // 1. Chosen Champion : celui imposé (variante), sinon le plus possédé
   const ownedChampions = champions.filter((g) => g.owned > 0).sort((a, b) => b.owned - a.owned);
-  const chosen = ownedChampions[0] || null;
+  const chosen = forcedChampionName
+    ? champions.find((g) => g.name === forcedChampionName) || null
+    : ownedChampions[0] || null;
   if (chosen) add(chosen, Math.min(chosen.owned, MAX_COPIES));
   else toBuy.push(...suggest(champions, 1));
   // Exemplaires déjà prévus par nom (possédés + champion à acheter), pour respecter la limite de 3
@@ -164,13 +168,42 @@ function buildDeck(legend, cards, inventory, prices) {
   };
 }
 
+// Champions éligibles pour une Legend (mêmes tags), avec quantité possédée
+function listChampions(legend, cards, inventory, prices) {
+  const playable = cards.filter((c) => c.supertype !== 'Token');
+  const pool = groupByName(
+    playable.filter((c) => c.type === 'Unit' && c.supertype === 'Champion' && sharesTag(c, legend.tags)),
+    inventory,
+    prices,
+  );
+  return pool.sort((a, b) => b.owned - a.owned || a.name.localeCompare(b.name));
+}
+
+// Une variante de deck par champion possédé (le joueur choisit son Chosen
+// Champion au lieu de se le voir imposer) ; si aucun n'est possédé, une seule
+// variante avec une suggestion d'achat pour le champion.
+function buildDeckVariants(legend, cards, inventory, prices) {
+  const champions = listChampions(legend, cards, inventory, prices);
+  const owned = champions.filter((c) => c.owned > 0);
+  const names = owned.length ? owned.map((c) => c.name) : [null];
+  return names.map((championName, i) => ({
+    champion: championName,
+    ownedCopies: championName ? owned[i].owned : 0,
+    isDefault: i === 0,
+    deck: buildDeck(legend, cards, inventory, prices, championName),
+  }));
+}
+
 // Un deck par Legend possédée (variantes regroupées)
 function buildDecks(cards, inventory, prices) {
   const seen = new Set();
   return cards
     .filter((c) => c.type === 'Legend' && ownedQty(inventory, c.id) > 0)
     .filter((c) => !seen.has(c.baseName) && seen.add(c.baseName))
-    .map((legend) => buildDeck(legend, cards, inventory, prices));
+    .map((legend) => ({
+      legend: { code: legend.code, name: legend.baseName, domains: legend.domains },
+      variants: buildDeckVariants(legend, cards, inventory, prices),
+    }));
 }
 
-module.exports = { buildDecks, buildDeck, ownedQty, MAIN_DECK_SIZE, RUNE_COUNT, BATTLEFIELD_COUNT };
+module.exports = { buildDecks, buildDeck, buildDeckVariants, ownedQty, MAIN_DECK_SIZE, RUNE_COUNT, BATTLEFIELD_COUNT };

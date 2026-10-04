@@ -7,6 +7,7 @@ const store = require('./src/store');
 const { runSync } = require('./src/jobs');
 const { priceOf } = require('./src/prices');
 const { buildDecks } = require('./src/decks');
+const { buildArchetypes } = require('./src/archetypes');
 const { parsePrintedCode, findByCode } = require('./src/cardcode');
 const { matchByName } = require('./src/namesearch');
 
@@ -150,6 +151,11 @@ app.post('/api/inventory', (req, res) => {
 
 app.get('/api/decks', (req, res) => {
   res.json(buildDecks(cards, store.loadInventory(), prices));
+});
+
+// Decks d'exemple ("archétypes") entretenus à la main, avec le % déjà possédé
+app.get('/api/archetypes', (req, res) => {
+  res.json(buildArchetypes(cards, store.loadInventory()));
 });
 
 // Synchronisation manuelle (la synchronisation régulière passe par le timer systemd)

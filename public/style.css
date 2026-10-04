@@ -32,6 +32,40 @@ input, select { width: 100%; padding: 8px; margin: 4px 0; border-radius: 6px; bo
 .card-row .actions { display: flex; flex-direction: column; gap: 4px; }
 .deck { background: var(--panel); border-radius: 8px; padding: 12px; margin: 10px 0; }
 .deck h2 { margin: 0; font-size: 1.1rem; }
+
+.variant-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.variant-tab {
+  border: 1px solid #333; background: transparent; color: var(--muted);
+  font-size: 0.78rem; padding: 6px 10px; border-radius: 999px; cursor: pointer;
+}
+.variant-tab[aria-selected="true"] { background: var(--accent); color: #111; border-color: var(--accent); font-weight: 600; }
+
+.champ-select { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.champ-chip {
+  border: 1px solid #333; background: var(--bg); color: var(--text);
+  font-size: 0.78rem; padding: 6px 10px; border-radius: 6px; cursor: pointer;
+}
+.champ-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: #111; font-weight: 600; }
+
+.deck-meter { height: 6px; border-radius: 999px; background: var(--bg); overflow: hidden; margin: 6px 0; }
+.deck-meter > span { display: block; height: 100%; background: var(--ok); }
+.buy-box { background: var(--bg); border-radius: 6px; padding: 8px 10px; font-size: 0.82rem; margin-top: 8px; display: flex; justify-content: space-between; gap: 8px; }
+
+.archetype-toggle {
+  width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  background: var(--panel); border: 1px solid #333; border-radius: 8px; padding: 10px 12px; margin-top: 14px;
+  text-align: left; font: inherit; color: var(--text);
+}
+.archetype-toggle strong { display: block; }
+.switch { width: 36px; height: 20px; border-radius: 999px; background: var(--bg); border: 1px solid #333; position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 1px; left: 1px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); }
+.switch.on { background: var(--accent); border-color: var(--accent); }
+.switch.on::after { background: #111; transform: translateX(16px); }
+
+.archetype-card { background: var(--panel); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.archetype-card h3 { margin: 0 0 2px; font-size: 0.95rem; }
+.archetype-card .own-row { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--muted); margin-top: 6px; }
+.archetype-card .own-row .deck-meter { flex: 1; margin: 0; }
 @media (max-width: 600px) { .filters { grid-template-columns: 1fr; } }
 
 /* Outil de recadrage du scan */

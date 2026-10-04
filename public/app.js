@@ -1,4 +1,5 @@
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => [...document.querySelectorAll(sel)];
 const usd = (v) => (v == null ? '—' : v.toLocaleString('fr-FR', { style: 'currency', currency: 'USD' }));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -393,24 +394,85 @@ async function loadInventory() {
 }
 
 // ---------- Decks ----------
+function deckBody(d) {
+  return `
+    <p class="${d.complete ? 'ok' : 'ko'}">${d.complete ? 'Deck complet' : 'Deck incomplet'}
+      — Main ${d.counts.main}/40 · Runes ${d.counts.runes}/12 · Battlefields ${d.counts.battlefields}/3</p>
+    <div class="deck-meter"><span style="width:${Math.round((d.counts.main / 40) * 100)}%"></span></div>
+    <details><summary>Main deck</summary><ul>${d.main.map((m) => `<li>${m.qty} × ${esc(m.name)}</li>`).join('')}</ul></details>
+    <details><summary>Runes & Battlefields</summary><ul>
+      ${d.runes.map((r) => `<li>${r.qty} × ${esc(r.name)}</li>`).join('')}
+      ${d.battlefields.map((b) => `<li>${esc(b)}</li>`).join('')}
+    </ul></details>
+    ${d.toBuy.length ? `
+      <div class="buy-box"><span>${d.toBuy.length} carte(s) manquante(s)</span><strong>${usd(d.toBuyTotal)}</strong></div>
+      <details><summary>Détail des achats</summary><ul>${d.toBuy.map((b) => `<li>${b.qty} × ${esc(b.name)} <span class="muted">${esc(b.code)}</span> — ${usd(b.unitPrice)}</li>`).join('')}</ul></details>` : ''}`;
+}
+
+function legendCard({ legend, variants }) {
+  const pct = (v) => Math.round((v.deck.counts.main / 40) * 100);
+  return `
+    <article class="deck" data-legend="${esc(legend.code)}">
+      <h2>${esc(legend.name)} <span class="muted">${esc(legend.domains.join(' / '))}</span></h2>
+      ${variants.length > 1 ? `
+        <div class="variant-tabs" role="tablist">
+          ${variants.map((v, i) => `
+            <button class="variant-tab" data-variant="${i}" aria-selected="${i === 0}">
+              ${esc(v.champion || 'À choisir')} <span class="muted">${pct(v)}%</span>
+            </button>`).join('')}
+        </div>` : ''}
+      ${variants.length > 1 ? `
+        <div class="champ-select muted">Chosen Champion :
+          ${variants.map((v, i) => `<button class="champ-chip" data-variant="${i}" aria-pressed="${i === 0}">${esc(v.champion)}</button>`).join('')}
+        </div>` : ''}
+      <div class="variant-body">${deckBody(variants[0].deck)}</div>
+    </article>`;
+}
+
 async function loadDecks() {
   const decks = await api('/api/decks');
-  $('#decks-list').innerHTML = decks.map((d) => `
-    <article class="deck">
-      <h2>${esc(d.legend.name)} <span class="muted">${esc(d.legend.domains.join(' / '))}</span></h2>
-      <p class="${d.complete ? 'ok' : 'ko'}">${d.complete ? 'Deck complet' : 'Deck incomplet'}
-        — Main ${d.counts.main}/40 · Runes ${d.counts.runes}/12 · Battlefields ${d.counts.battlefields}/3</p>
-      <p>Chosen Champion : ${esc(d.champion || 'manquant')}</p>
-      <details><summary>Main deck</summary><ul>${d.main.map((m) => `<li>${m.qty} × ${esc(m.name)}</li>`).join('')}</ul></details>
-      <details><summary>Runes & Battlefields</summary><ul>
-        ${d.runes.map((r) => `<li>${r.qty} × ${esc(r.name)}</li>`).join('')}
-        ${d.battlefields.map((b) => `<li>${esc(b)}</li>`).join('')}
-      </ul></details>
-      ${d.toBuy.length ? `
-        <h3>À acheter (${usd(d.toBuyTotal)})</h3>
-        <ul>${d.toBuy.map((b) => `<li>${b.qty} × ${esc(b.name)} <span class="muted">${esc(b.code)}</span> — ${usd(b.unitPrice)}</li>`).join('')}</ul>` : ''}
-    </article>`).join('') || '<p>Ajoutez au moins une Legend à l\'inventaire pour générer un deck.</p>';
+  $('#decks-list').innerHTML = decks.map(legendCard).join('')
+    || '<p>Ajoutez au moins une Legend à l\'inventaire pour générer un deck.</p>';
+  $$('.deck').forEach((article, legendIdx) => {
+    const deck = decks[legendIdx];
+    const switchVariant = (i) => {
+      article.querySelectorAll('.variant-tab, .champ-chip').forEach((btn) => {
+        const selected = Number(btn.dataset.variant) === i;
+        btn.setAttribute(btn.classList.contains('variant-tab') ? 'aria-selected' : 'aria-pressed', String(selected));
+      });
+      article.querySelector('.variant-body').innerHTML = deckBody(deck.variants[i].deck);
+    };
+    article.querySelectorAll('.variant-tab, .champ-chip').forEach((btn) => {
+      btn.addEventListener('click', () => switchVariant(Number(btn.dataset.variant)));
+    });
+  });
 }
+
+// ---------- Archétypes ----------
+let archetypesLoaded = false;
+async function loadArchetypes() {
+  const archetypes = await api('/api/archetypes');
+  $('#archetype-list').innerHTML = archetypes.map((a) => `
+    <article class="archetype-card">
+      <h3>${esc(a.name)} <span class="muted">${esc(a.domains.join(' / '))}</span></h3>
+      <p class="muted">${esc(a.description)}</p>
+      <div class="own-row">
+        <span>Possédé</span>
+        <div class="deck-meter"><span style="width:${Math.round(a.ownedRatio * 100)}%"></span></div>
+        <span>${Math.round(a.ownedRatio * 100)}%</span>
+      </div>
+    </article>`).join('');
+  archetypesLoaded = true;
+}
+
+$('#archetype-toggle').addEventListener('click', async () => {
+  const list = $('#archetype-list');
+  const open = list.hidden;
+  if (open && !archetypesLoaded) await loadArchetypes();
+  list.hidden = !open;
+  $('#archetype-switch').classList.toggle('on', open);
+  $('#archetype-toggle').setAttribute('aria-expanded', String(open));
+});
 
 // ---------- Catalogue ----------
 async function loadCatalog() {
