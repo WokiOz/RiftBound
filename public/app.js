@@ -74,18 +74,25 @@ function cardRow(card) {
     </div>`;
 }
 
+// Ajoute une carte à l'inventaire et enchaîne (scanSession + carte/photo
+// suivante). Partagé entre le tap manuel sur "+ Normal"/"+ Foil" et l'ajout
+// automatique quand le scan reconnaît une seule carte sans ambiguïté.
+async function addToInventory(id, finish) {
+  const r = await api('/api/inventory', { method: 'POST', body: { id, finish, delta: 1 } });
+  recordScanAdd(id, r.finish);
+  return r;
+}
+
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-add]');
   if (!btn) return;
-  const delta = Number(btn.dataset.delta || 1);
-  const r = await api('/api/inventory', {
-    method: 'POST',
-    body: { id: btn.dataset.add, finish: btn.dataset.finish, delta },
-  });
-  if (btn.dataset.delta) loadInventory();
-  else btn.textContent = `✓ ${r.finish} (${r.qty})`;
-
-  if (!btn.dataset.delta && btn.closest('#scan-result-cards')) recordScanAdd(btn.dataset.add, r.finish);
+  if (btn.dataset.delta) {
+    await api('/api/inventory', { method: 'POST', body: { id: btn.dataset.add, finish: btn.dataset.finish, delta: Number(btn.dataset.delta) } });
+    loadInventory();
+    return;
+  }
+  const r = await addToInventory(btn.dataset.add, btn.dataset.finish);
+  btn.textContent = `✓ ${r.finish} (${r.qty})`;
 });
 
 // ---------- Scanner (photo entière -> cadre de recadrage -> OCR sur le cadre) ----------
@@ -105,6 +112,14 @@ let scanQueue = [];
 let scanIndex = 0;
 let scanSession = []; // { id, name, finish, qty } ajoutés pendant cette session
 let lastScanCards = []; // cartes du dernier code lu, pour retrouver leur nom lors de l'ajout
+let scanFinish = 'normal'; // finition utilisée pour les ajouts automatiques (bascule Normal/Foil)
+
+$$('.finish-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    scanFinish = btn.dataset.finish;
+    $$('.finish-btn').forEach((b) => b.classList.toggle('active', b === btn));
+  });
+});
 
 $('#scan-input').addEventListener('change', (e) => startScanQueue([...e.target.files]));
 $('#scan-multi-input').addEventListener('change', (e) => startScanQueue([...e.target.files]));
@@ -158,16 +173,28 @@ async function processCapturedImage(source, padded = false) {
     // allemand, etc. ne pourra JAMAIS être reconnue par son nom, même avec
     // une photo parfaite. On essaie donc le code en premier.
     const codeResult = await tryCodeMatch(padded);
-    if (codeResult.cards.length) {
+    if (codeResult.cards.length === 1) {
+      // Une seule carte possible pour ce code : ajout direct, sans attendre
+      // un tap, pour pouvoir enchaîner les cartes sans interruption.
+      const [card] = codeResult.cards;
       lastScanCards = codeResult.cards;
-      $('#scan-result').innerHTML = `<p class="ok">Reconnue par le code (${esc(codeResult.code.set)} ${codeResult.code.number}/${codeResult.code.total}).</p><div id="scan-result-cards">${codeResult.cards.map(cardRow).join('')}</div>`;
+      const r = await addToInventory(card.id, scanFinish);
+      $('#scan-result').innerHTML = `<p class="ok">Ajoutée (${esc(r.finish)}, ${r.qty}×) — code ${esc(codeResult.code.set)} ${codeResult.code.number}/${codeResult.code.total}.</p><div id="scan-result-cards">${cardRow(card)}</div>`;
+      return true;
+    }
+    if (codeResult.cards.length > 1) {
+      // Plusieurs variantes partagent ce code (Signature, Showcase...) :
+      // ambigu, on laisse choisir manuellement plutôt que de deviner.
+      lastScanCards = codeResult.cards;
+      $('#scan-result').innerHTML = `<p class="ok">Reconnue par le code (${esc(codeResult.code.set)} ${codeResult.code.number}/${codeResult.code.total}) — plusieurs variantes, laquelle ?</p><div id="scan-result-cards">${codeResult.cards.map(cardRow).join('')}</div>`;
       return true;
     }
 
     const { card, text } = await tryNameMatch(padded);
     if (card) {
       lastScanCards = [card];
-      $('#scan-result').innerHTML = `<p class="ok">Reconnue par le nom.</p><div id="scan-result-cards">${cardRow(card)}</div>`;
+      const r = await addToInventory(card.id, scanFinish);
+      $('#scan-result').innerHTML = `<p class="ok">Ajoutée (${esc(r.finish)}, ${r.qty}×) — reconnue par le nom.</p><div id="scan-result-cards">${cardRow(card)}</div>`;
       return true;
     }
 
@@ -288,8 +315,11 @@ $('#crop-cancel-btn').addEventListener('click', () => {
 $('#crop-scan-btn').addEventListener('click', async () => {
   const out = $('#scan-result');
   out.innerHTML = '<p>Lecture du code…</p>';
+  let worker;
   try {
-    const { data } = await Tesseract.recognize(extractCrop(), 'eng');
+    worker = await Tesseract.createWorker('eng');
+    await worker.setParameters({ tessedit_pageseg_mode: '7' });
+    const { data } = await worker.recognize(extractCrop());
     const r = await api('/api/scan', { method: 'POST', body: { text: data.text } });
     lastScanCards = r.cards || [];
     if (!r.code) {
@@ -301,6 +331,8 @@ $('#crop-scan-btn').addEventListener('click', async () => {
     }
   } catch (err) {
     out.innerHTML = `<p>Erreur : ${esc(err.message)}</p>`;
+  } finally {
+    if (worker) worker.terminate();
   }
 });
 
@@ -343,6 +375,32 @@ function extractRegion(r, zoom = 3) {
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(cropBitmap, sx, sy, sw, sh, 0, 0, targetW, targetH);
+  return preprocessForOcr(canvas);
+}
+
+// Niveaux de gris + étirement de contraste (min/max de la zone ramenés à
+// 0-255) avant l'OCR : on envoyait jusqu'ici l'image couleur brute telle
+// quelle, alors que Tesseract lit nettement mieux un texte à fort contraste
+// qu'une photo couleur (éclairage inégal, reflets...). Étirement plutôt
+// qu'un seuillage noir/blanc strict : améliore toujours la lisibilité sans
+// risquer de perdre des caractères fins si le seuil choisi est mauvais.
+function preprocessForOcr(canvas) {
+  const ctx = canvas.getContext('2d');
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  let min = 255, max = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    d[i] = d[i + 1] = d[i + 2] = g;
+    if (g < min) min = g;
+    if (g > max) max = g;
+  }
+  const range = Math.max(1, max - min);
+  for (let i = 0; i < d.length; i += 4) {
+    const v = ((d[i] - min) / range) * 255;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(img, 0, 0);
   return canvas;
 }
 
@@ -393,17 +451,29 @@ const CODE_CANDIDATES_PADDED = [
   { x: 0.15, y: 0.793, w: 0.38, h: 0.045 },
 ];
 
-// Lit le texte d'une zone candidate (silencieux en cas d'échec OCR)
+// Lit le texte d'une zone candidate (silencieux en cas d'échec OCR). Chaque
+// appel crée son propre worker Tesseract (comme le fait Tesseract.recognize()
+// en coulisses) plutôt que d'en réutiliser un seul : ça garde le parallélisme
+// entre zones candidates (voir tryCodeMatch/tryNameMatch), tout en permettant
+// de régler tessedit_pageseg_mode, ce que l'API de commodité Tesseract.recognize()
+// n'exposait pas. PSM 7 = "une seule ligne de texte", exactement ce que sont
+// ces bandes (nom ou code) : par défaut Tesseract essaie de segmenter l'image
+// en plusieurs blocs, ce qui se prête mal à une bande aussi étroite.
 async function ocrRegion(region, zoom) {
   const rect = {
     x: cropCanvas.width * region.x, y: cropCanvas.height * region.y,
     w: cropCanvas.width * region.w, h: cropCanvas.height * region.h,
   };
+  let worker;
   try {
-    const { data } = await Tesseract.recognize(extractRegion(rect, zoom), 'eng');
+    worker = await Tesseract.createWorker('eng');
+    await worker.setParameters({ tessedit_pageseg_mode: '7' });
+    const { data } = await worker.recognize(extractRegion(rect, zoom));
     return data.text.trim();
   } catch (err) {
     return '';
+  } finally {
+    if (worker) worker.terminate();
   }
 }
 

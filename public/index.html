@@ -24,7 +24,11 @@
 
   <main>
     <section id="scan" class="tab active">
-      <p class="muted">L'appli essaie d'abord de reconnaître la carte par son nom ; si ça ne suffit pas, ajustez le cadre sur le code imprimé en bas à gauche (ex. « UNL • 121/219 »).</p>
+      <p class="muted">Une carte reconnue sans ambiguïté est ajoutée automatiquement — choisissez d'abord la finition des cartes que vous scannez :</p>
+      <div class="finish-toggle" role="radiogroup" aria-label="Finition à ajouter">
+        <button type="button" class="finish-btn active" data-finish="normal">Normal</button>
+        <button type="button" class="finish-btn" data-finish="foil">Foil</button>
+      </div>
 
       <button id="btn-open-camera" class="button block">Caméra en direct</button>
 
