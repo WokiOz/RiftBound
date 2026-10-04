@@ -393,44 +393,49 @@ const CODE_CANDIDATES_PADDED = [
   { x: 0.15, y: 0.793, w: 0.38, h: 0.045 },
 ];
 
+// Lit le texte d'une zone candidate (silencieux en cas d'échec OCR)
+async function ocrRegion(region, zoom) {
+  const rect = {
+    x: cropCanvas.width * region.x, y: cropCanvas.height * region.y,
+    w: cropCanvas.width * region.w, h: cropCanvas.height * region.h,
+  };
+  try {
+    const { data } = await Tesseract.recognize(extractRegion(rect, zoom), 'eng');
+    return data.text.trim();
+  } catch (err) {
+    return '';
+  }
+}
+
+// Les zones candidates sont lues EN PARALLÈLE, pas l'une après l'autre :
+// jusqu'à 4 lectures OCR enchaînées (~1-3 s chacune sur un téléphone)
+// rendaient l'échec très long (jusqu'à 8 au total avec le nom). Ce sont des
+// lectures indépendantes de la même image déjà capturée, donc rien n'empêche
+// de les lancer toutes à la fois et de garder la première qui réussit.
 async function tryCodeMatch(padded = false) {
   const candidates = padded ? CODE_CANDIDATES_PADDED : CODE_CANDIDATES_PLAIN;
-  let lastText = '';
-  for (const region of candidates) {
-    const rect = {
-      x: cropCanvas.width * region.x, y: cropCanvas.height * region.y,
-      w: cropCanvas.width * region.w, h: cropCanvas.height * region.h,
-    };
-    try {
-      const { data } = await Tesseract.recognize(extractRegion(rect, 6), 'eng');
-      lastText = data.text.trim();
-      const r = await api('/api/scan', { method: 'POST', body: { text: data.text } });
-      if (r.code && r.cards.length) return { cards: r.cards, code: r.code, text: lastText };
-    } catch (err) {
-      lastText = '';
-    }
-  }
-  return { cards: [], code: null, text: lastText };
+  const results = await Promise.all(candidates.map(async (region) => {
+    const text = await ocrRegion(region, 6);
+    if (!text) return { text: '', code: null, cards: [] };
+    const r = await api('/api/scan', { method: 'POST', body: { text } });
+    return { text, code: r.code, cards: r.cards || [] };
+  }));
+  const hit = results.find((r) => r.code && r.cards.length);
+  if (hit) return hit;
+  return { cards: [], code: null, text: results.map((r) => r.text).find(Boolean) || '' };
 }
 
 async function tryNameMatch(padded = false) {
   const candidates = padded ? NAME_CANDIDATES_PADDED : NAME_CANDIDATES_PLAIN;
-  let lastText = '';
-  for (const region of candidates) {
-    const nameRegion = {
-      x: cropCanvas.width * region.x, y: cropCanvas.height * region.y,
-      w: cropCanvas.width * region.w, h: cropCanvas.height * region.h,
-    };
-    try {
-      const { data } = await Tesseract.recognize(extractRegion(nameRegion), 'eng');
-      lastText = data.text.trim();
-      const r = await api('/api/scan-name', { method: 'POST', body: { text: data.text } });
-      if (r.confident) return { card: r.card, text: lastText };
-    } catch (err) {
-      lastText = '';
-    }
-  }
-  return { card: null, text: lastText };
+  const results = await Promise.all(candidates.map(async (region) => {
+    const text = await ocrRegion(region, 3);
+    if (!text) return { text: '', card: null };
+    const r = await api('/api/scan-name', { method: 'POST', body: { text } });
+    return { text, card: r.confident ? r.card : null };
+  }));
+  const hit = results.find((r) => r.card);
+  if (hit) return hit;
+  return { card: null, text: results.map((r) => r.text).find(Boolean) || '' };
 }
 
 window.addEventListener('resize', () => {
