@@ -160,27 +160,56 @@ async function loadScanQueueItem() {
 // Traitement commun à une image capturée, quelle que soit sa provenance
 // (fichier choisi, ou frame gelée de la caméra en direct) : tentative
 // automatique par le nom, puis repli sur le cadrage manuel du code.
-async function processCapturedImage(source, padded = false) {
+// mode 'code' (caméra en direct) : le gabarit vise déjà directement le code
+// imprimé (voir guideRect), donc une seule lecture OCR sur quasi toute
+// l'image capturée — plus de résolution sur le seul signal utile, confirmé
+// plus fiable à l'usage que le mode "carte entière". Jamais de cadrage
+// manuel sur un échec (voir "fin du faux repli manuel") : on relance
+// simplement la surveillance pour un nouvel essai.
+// mode 'full' (galerie, "Prendre une photo"/"Scanner plusieurs cartes") :
+// photo de la carte entière, position dans le cadre inconnue — tente de
+// détecter le rectangle de la carte (OpenCV) avant de chercher le code puis
+// le nom ; repli sur le cadrage manuel si tout échoue.
+async function processCapturedImage(source, mode = 'full') {
   cropTool.hidden = true;
   $('#scan-result').innerHTML = '<p class="muted">Reconnaissance…</p>';
   try {
     cropBitmap = await createImageBitmap(source);
     drawCropStage(); // fonctionne même cropTool masqué (ne dépend pas de sa visibilité)
 
-    // Galerie seulement (la caméra en direct cadre déjà précisément via le
-    // gabarit, pas besoin de deviner les bords après coup) : tente de
-    // détecter le rectangle de la carte dans la photo, pour ne plus
-    // supposer qu'elle remplit toute l'image. Si la détection échoue
-    // (doigts sur le bord, OpenCV indisponible...), box reste la photo
-    // entière — comportement inchangé, pas de régression.
-    const box = padded ? FULL_BOX : (await detectCardBounds(cropBitmap)) || FULL_BOX;
+    if (mode === 'code') {
+      const codeResult = await tryCodeMatchDirect();
+      if (codeResult.cards.length === 1) {
+        const [card] = codeResult.cards;
+        lastScanCards = codeResult.cards;
+        const r = await addToInventory(card.id, scanFinish);
+        $('#scan-result').innerHTML = `<p class="ok">Ajoutée (${esc(r.finish)}, ${r.qty}×) — code ${esc(codeResult.code.set)} ${codeResult.code.number}/${codeResult.code.total}.</p><div id="scan-result-cards">${cardRow(card)}</div>`;
+        return true;
+      }
+      if (codeResult.cards.length > 1) {
+        lastScanCards = codeResult.cards;
+        $('#scan-result').innerHTML = `<p class="ok">Reconnue par le code (${esc(codeResult.code.set)} ${codeResult.code.number}/${codeResult.code.total}) — plusieurs variantes, laquelle ?</p><div id="scan-result-cards">${codeResult.cards.map(cardRow).join('')}</div>`;
+        return true;
+      }
+      $('#scan-result').innerHTML = codeResult.text
+        ? `<p class="muted">Code lu : « ${esc(codeResult.text)} » — pas de correspondance sûre. Nouvel essai…</p>`
+        : '<p class="muted">Rien à lire ici. Nouvel essai…</p>';
+      if (liveCameraActive) setTimeout(armCameraWatch, 600);
+      return false;
+    }
+
+    // Galerie : tente de détecter le rectangle de la carte dans la photo,
+    // pour ne plus supposer qu'elle remplit toute l'image. Si la détection
+    // échoue (doigts sur le bord, OpenCV indisponible...), box reste la
+    // photo entière — comportement inchangé, pas de régression.
+    const box = (await detectCardBounds(cropBitmap)) || FULL_BOX;
 
     // Le code imprimé (ex. « OGN • 269/298 ») identifie la carte indépendamment
     // de sa langue d'impression, contrairement au nom : le catalogue (API
     // Riftcodex) n'existe qu'en anglais, donc une carte imprimée en français,
     // allemand, etc. ne pourra JAMAIS être reconnue par son nom, même avec
     // une photo parfaite. On essaie donc le code en premier.
-    const codeResult = await tryCodeMatch(padded, box);
+    const codeResult = await tryCodeMatch(box);
     if (codeResult.cards.length === 1) {
       // Une seule carte possible pour ce code : ajout direct, sans attendre
       // un tap, pour pouvoir enchaîner les cartes sans interruption.
@@ -198,7 +227,7 @@ async function processCapturedImage(source, padded = false) {
       return true;
     }
 
-    const { card, text } = await tryNameMatch(padded, box);
+    const { card, text } = await tryNameMatch(box);
     if (card) {
       lastScanCards = [card];
       const r = await addToInventory(card.id, scanFinish);
@@ -210,24 +239,6 @@ async function processCapturedImage(source, padded = false) {
       text && `nom lu : « ${esc(text)} »`,
       codeResult.text && `code lu : « ${esc(codeResult.text)} »`,
     ].filter(Boolean);
-
-    // Caméra en direct : jamais de cadrage manuel sur un échec, on relance
-    // directement la surveillance pour le prochain essai. Un OCR trouve
-    // presque toujours QUELQUE CHOSE (même du bruit halluciné en texte) sur
-    // n'importe quelle image, carte ou non : se baser sur "du texte a été lu"
-    // pour décider s'il faut proposer un cadrage manuel ne distingue donc pas
-    // fiablement "une carte mal cadrée" d'un fond texturé (essayé : un sol a
-    // produit du texte halluciné comme une vraie carte). La caméra réessaie
-    // en continu de toute façon, donc un cadrage manuel figé sur une capture
-    // ratée aide moins qu'un nouvel essai après avoir légèrement rebougé —
-    // le cadrage manuel reste disponible via "Prendre une photo" (galerie).
-    if (padded) {
-      $('#scan-result').innerHTML = hints.length
-        ? `<p class="muted">Pas de correspondance sûre (${hints.join(' — ')}). Nouvel essai…</p>`
-        : '<p class="muted">Rien à lire ici. Nouvel essai…</p>';
-      if (liveCameraActive) setTimeout(armCameraWatch, 600);
-      return false;
-    }
 
     // Repli (galerie) : cadrage manuel sur le code. On affiche ce que l'OCR a lu
     // (nom et/ou code) : utile pour comprendre pourquoi la reconnaissance
@@ -433,20 +444,14 @@ function extractCrop() {
 // en essaie plusieurs positions à la suite pour tolérer un cadrage caméra
 // imprécis, plutôt qu'une seule zone large et floue.
 const NAME_CANDIDATES_PLAIN = [{ x: 0.06, y: 0.545, w: 0.72, h: 0.085 }];
-// Une capture caméra inclut volontairement 25 % de marge (voir guideRect) :
-// la carte n'y occupe que le centre, donc la bande "remappée" équivalente
-// est plus haute (~0.53) et plus étroite ; plusieurs décalages verticaux
-// couvrent un gabarit visé à l'œil pas tout à fait précis.
-// Position calibrée en vérifiant l'image réellement capturée (voir le
-// commit) : 0,48 centre pile le bandeau du nom sur un cadrage bien aligné.
-const NAME_CANDIDATES_PADDED = [0.48, 0.40, 0.56, 0.32].map((y) => ({ x: 0.10, y, w: 0.70, h: 0.08 }));
 
 // Le code imprimé (ex. « OGN • 269/298 ») est une toute petite bande tout en
 // bas à gauche de la carte — bien plus petite que le nom, d'où un zoom OCR
 // plus agressif (voir extractRegion) et plusieurs positions candidates pour
 // tolérer l'imprécision de cadrage. Point de départ : la position par défaut
 // du cadre manuel (resetCropBox, mesurée sur une image de référence),
-// avec quelques variantes autour.
+// avec quelques variantes autour. Utilisé seulement en mode galerie : la
+// caméra en direct vise déjà le code directement (voir tryCodeMatchDirect).
 // x ramené à 0 (au lieu de 0.02) et bande élargie : sur une vraie photo, 0.02
 // coupait la première lettre du set (« OGN » lu « GN »). Trouvé en comparant
 // plusieurs décalages contre une vraie capture — voir le commit.
@@ -454,17 +459,6 @@ const CODE_CANDIDATES_PLAIN = [
   { x: 0, y: 0.94, w: 0.48, h: 0.05 },
   { x: 0, y: 0.925, w: 0.48, h: 0.06 },
   { x: 0, y: 0.955, w: 0.48, h: 0.04 },
-];
-// Conversion de la position "pleine carte" ci-dessus vers les coordonnées
-// d'une capture caméra avec marge (guideRect(0.25) : la carte occupe le
-// centre 1/1.5 du cadre capturé, décalée de 0.25/1.5 ≈ 0.167 de chaque côté).
-// Non calibré visuellement (contrairement à NAME_CANDIDATES_PADDED en son
-// temps) : à ajuster si besoin au vu de captures réelles.
-const CODE_CANDIDATES_PADDED = [
-  { x: 0.18, y: 0.793, w: 0.32, h: 0.035 },
-  { x: 0.18, y: 0.760, w: 0.32, h: 0.045 },
-  { x: 0.18, y: 0.825, w: 0.32, h: 0.045 },
-  { x: 0.15, y: 0.793, w: 0.38, h: 0.045 },
 ];
 
 // Lit le texte d'une zone candidate (silencieux en cas d'échec OCR). Chaque
@@ -510,10 +504,9 @@ function remapRegion(region, box) {
 // rendaient l'échec très long (jusqu'à 8 au total avec le nom). Ce sont des
 // lectures indépendantes de la même image déjà capturée, donc rien n'empêche
 // de les lancer toutes à la fois et de garder la première qui réussit.
-async function tryCodeMatch(padded = false, box = FULL_BOX) {
-  const candidates = padded ? CODE_CANDIDATES_PADDED : CODE_CANDIDATES_PLAIN;
-  const results = await Promise.all(candidates.map(async (region) => {
-    const text = await ocrRegion(padded ? region : remapRegion(region, box), 6);
+async function tryCodeMatch(box = FULL_BOX) {
+  const results = await Promise.all(CODE_CANDIDATES_PLAIN.map(async (region) => {
+    const text = await ocrRegion(remapRegion(region, box), 6);
     if (!text) return { text: '', code: null, cards: [] };
     const r = await api('/api/scan', { method: 'POST', body: { text } });
     return { text, code: r.code, cards: r.cards || [] };
@@ -523,10 +516,9 @@ async function tryCodeMatch(padded = false, box = FULL_BOX) {
   return { cards: [], code: null, text: results.map((r) => r.text).find(Boolean) || '' };
 }
 
-async function tryNameMatch(padded = false, box = FULL_BOX) {
-  const candidates = padded ? NAME_CANDIDATES_PADDED : NAME_CANDIDATES_PLAIN;
-  const results = await Promise.all(candidates.map(async (region) => {
-    const text = await ocrRegion(padded ? region : remapRegion(region, box), 3);
+async function tryNameMatch(box = FULL_BOX) {
+  const results = await Promise.all(NAME_CANDIDATES_PLAIN.map(async (region) => {
+    const text = await ocrRegion(remapRegion(region, box), 3);
     if (!text) return { text: '', card: null };
     const r = await api('/api/scan-name', { method: 'POST', body: { text } });
     return { text, card: r.confident ? r.card : null };
@@ -534,6 +526,28 @@ async function tryNameMatch(padded = false, box = FULL_BOX) {
   const hit = results.find((r) => r.card);
   if (hit) return hit;
   return { card: null, text: results.map((r) => r.text).find(Boolean) || '' };
+}
+
+// Caméra en direct : le gabarit vise déjà directement le code (voir
+// guideRect), donc l'image capturée EST la zone à lire — pas besoin de
+// deviner sa position comme pour une photo de carte entière. Deux cadrages
+// (plein cadre, puis recentré en excluant la marge ajoutée par
+// captureFromCamera) pour tolérer un alignement pas tout à fait pixel-parfait.
+const CODE_DIRECT_REGIONS = [
+  { x: 0, y: 0, w: 1, h: 1 },
+  { x: 0.08, y: 0.2, w: 0.84, h: 0.6 },
+];
+
+async function tryCodeMatchDirect() {
+  const results = await Promise.all(CODE_DIRECT_REGIONS.map(async (region) => {
+    const text = await ocrRegion(region, 6);
+    if (!text) return { text: '', code: null, cards: [] };
+    const r = await api('/api/scan', { method: 'POST', body: { text } });
+    return { text, code: r.code, cards: r.cards || [] };
+  }));
+  const hit = results.find((r) => r.code && r.cards.length);
+  if (hit) return hit;
+  return { cards: [], code: null, text: results.map((r) => r.text).find(Boolean) || '' };
 }
 
 // Charge OpenCV.js à la demande (~10 Mo, mis en cache par le navigateur
@@ -877,7 +891,7 @@ function armCameraWatch() {
   $('#scan-result').innerHTML = '';
   cameraGuide.classList.remove('aligned');
   cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
-  $('#camera-hint').textContent = 'Placez la carte dans le cadre';
+  $('#camera-hint').textContent = 'Alignez le code imprimé dans le cadre';
   cameraPrevSample = null;
   cameraDiffEma = null;
   cameraProgressMs = 0;
@@ -886,19 +900,22 @@ function armCameraWatch() {
   cameraWatchId = requestAnimationFrame(watchCameraFrame);
 }
 
-// Échantillonne le gabarit en petite résolution (16×22) pour détecter une
-// image stable (main immobile) contenant quelque chose (pas juste le fond).
 // Position du gabarit dans le flux vidéo, en fraction de sa résolution :
 // mêmes proportions que le cadre affiché à l'écran (#camera-guide en CSS).
+// Bande fine ciblant DIRECTEMENT le code imprimé (pas la carte entière) :
+// l'utilisateur rapproche le téléphone jusqu'à ce que le texte remplisse le
+// cadre. Ça donne à l'OCR un maximum de pixels natifs sur le seul signal
+// utile (le code, minuscule), et évite d'avoir à deviner sa position dans
+// une photo de carte entière — confirmé plus fiable à l'usage.
 // `padding` (fraction de la largeur/hauteur du gabarit) élargit la zone
 // réellement capturée au-delà du gabarit affiché à l'écran : viser à l'œil
 // un cadre dessiné n'est jamais pixel-parfait, et un décalage important
-// peut couper une partie de la carte hors de la capture — aucune recherche
-// après coup ne peut retrouver une donnée qui n'a jamais été photographiée.
+// peut couper le texte hors de la capture — aucune recherche après coup ne
+// peut retrouver une donnée qui n'a jamais été photographiée.
 function guideRect(padding = 0) {
   const vw = cameraVideo.videoWidth, vh = cameraVideo.videoHeight;
-  const w = vw * 0.64, h = w / 0.716;
-  const x = vw * 0.18 - w * padding, y = vh * 0.12 - h * padding;
+  const w = vw * 0.84, h = w / 7; // bande large et basse, pas le rectangle d'une carte
+  const x = vw * 0.08 - w * padding, y = vh * 0.44 - h * padding;
   const pw = w * (1 + 2 * padding), ph = h * (1 + 2 * padding);
   return {
     x: Math.max(0, x), y: Math.max(0, y),
@@ -906,15 +923,19 @@ function guideRect(padding = 0) {
   };
 }
 
+// Échantillonne le gabarit en petite résolution pour détecter une image
+// stable (main immobile) contenant quelque chose (pas juste le fond). Grille
+// large et basse (28×6) plutôt que carrée : plus proche de la forme réelle
+// de la bande visée, pour que variance/diff restent représentatifs.
 function sampleGuideRegion() {
   if (!cameraVideo.videoWidth) return null;
   const guide = guideRect();
   const canvas = sampleGuideRegion.canvas || (sampleGuideRegion.canvas = document.createElement('canvas'));
-  canvas.width = 16;
-  canvas.height = 22;
+  canvas.width = 28;
+  canvas.height = 6;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(cameraVideo, guide.x, guide.y, guide.w, guide.h, 0, 0, 16, 22);
-  return ctx.getImageData(0, 0, 16, 22).data;
+  ctx.drawImage(cameraVideo, guide.x, guide.y, guide.w, guide.h, 0, 0, 28, 6);
+  return ctx.getImageData(0, 0, 28, 6).data;
 }
 
 function watchCameraFrame(ts) {
@@ -993,7 +1014,7 @@ function watchCameraFrame(ts) {
   cameraGuide.classList.toggle('aligned', cameraProgressMs > 0);
   cameraRing.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - cameraProgressMs / CAMERA_STABLE_MS));
   $('#camera-hint').textContent = !hasContent
-    ? 'Placez la carte dans le cadre'
+    ? 'Alignez le code imprimé dans le cadre'
     : focusReady ? 'Ne bougez plus…' : 'Mise au point…';
   // Repère de calibration : la valeur affichée quand la carte est immobile
   // permet d'ajuster le seuil de stabilité au vu de vraies conditions
@@ -1016,16 +1037,16 @@ async function captureFromCamera() {
   $('#camera-hint').textContent = 'Photo prise, analyse…';
   setTimeout(() => $('#camera-flash').classList.remove('go'), 350);
 
-  // Capture un peu plus large que le gabarit affiché (25 % de marge de
-  // chaque côté) : viser à l'œil un cadre dessiné à l'écran n'est jamais
-  // parfait, cette marge évite de couper une partie de la carte hors de la
-  // capture quand l'alignement réel est légèrement décalé.
-  const g = guideRect(0.25);
+  // Capture un peu plus large que le gabarit affiché (marge de chaque côté) :
+  // viser à l'œil un cadre dessiné à l'écran n'est jamais parfait, cette
+  // marge évite de couper le texte hors de la capture quand l'alignement
+  // réel est légèrement décalé.
+  const g = guideRect(0.3);
   const canvas = document.createElement('canvas');
   canvas.width = g.w;
   canvas.height = g.h;
   canvas.getContext('2d').drawImage(cameraVideo, g.x, g.y, g.w, g.h, 0, 0, g.w, g.h);
-  await processCapturedImage(canvas, true); // capture avec marge : la carte n'occupe pas tout le cadre
+  await processCapturedImage(canvas, 'code');
 }
 
 loadStatus();
