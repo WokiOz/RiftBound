@@ -1041,7 +1041,14 @@ async function captureFromCamera() {
   // viser à l'œil un cadre dessiné à l'écran n'est jamais parfait, cette
   // marge évite de couper le texte hors de la capture quand l'alignement
   // réel est légèrement décalé.
-  const g = guideRect(0.3);
+  // 0.3 cassait la lecture en pratique : juste au-dessus du code se trouve
+  // le bloc de règles/texte d'ambiance de la carte, et cette marge allait le
+  // mordre, mélangeant deux blocs de texte très différents dans la même
+  // lecture OCR (confirmé en reproduisant la géométrie exacte d'une vraie
+  // capture ratée). Vérifié par balayage : 0.3 et 0.2 → illisible, 0.15 et
+  // 0.1 → lu parfaitement, 0.05 → coupe la première lettre. 0.15 garde une
+  // marge de sécurité par rapport au seuil d'échec (0.2).
+  const g = guideRect(0.15);
   const canvas = document.createElement('canvas');
   canvas.width = g.w;
   canvas.height = g.h;
