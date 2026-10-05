@@ -384,45 +384,26 @@ function extractRegion(r, zoom = 3) {
 // qu'une photo couleur (éclairage inégal, reflets...). Étirement plutôt
 // qu'un seuillage noir/blanc strict : améliore toujours la lisibilité sans
 // risquer de perdre des caractères fins si le seuil choisi est mauvais.
+// Correction suite à des essais contre une VRAIE photo (pas seulement des
+// images synthétiques) : le masque flou inversé + l'étirement de contraste
+// min/max, qui amélioraient nettement la tolérance au flou sur des images
+// synthétiques propres (voir l'historique), se sont révélés CONTRE-PRODUCTIFS
+// sur une vraie photo de téléphone — ils amplifient le bruit capteur/JPEG
+// réel autant que le texte, et cassent une lecture qui fonctionnait sans
+// prétraitement. Testé sur place (texte attendu « OGN • 212/298 • FR ») :
+//   - sans traitement : « OGN 212/298 » lu correctement
+//   - avec le renforcement de contours : texte illisible
+// Seule la conversion en niveaux de gris (neutre, jamais nuisible dans ces
+// essais) est conservée. Le compromis flou/bruit n'est pas résolu dans
+// l'absolu : si le flou redevient un problème après ce changement, il
+// faudra re-co-tester les deux à la fois plutôt que relancer un seul levier.
 function preprocessForOcr(canvas) {
-  // Masque flou inversé (unsharp mask) : accentue les transitions en
-  // soustrayant une version floutée de l'image à elle-même, ce qui ne
-  // corrige pas un vrai flou de mise au point (l'information fine est
-  // perdue, impossible à inventer) mais aide sur un flou léger en
-  // accentuant les contours encore présents. Testé empiriquement contre
-  // des images synthétiques à flou croissant (voir le commit) : repousse
-  // le seuil où l'OCR décroche, sans le faire disparaître.
   const ctx = canvas.getContext('2d');
-  const blurred = document.createElement('canvas');
-  blurred.width = canvas.width;
-  blurred.height = canvas.height;
-  const bctx = blurred.getContext('2d');
-  bctx.filter = 'blur(4px)';
-  bctx.drawImage(canvas, 0, 0);
-
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const blurImg = bctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d = img.data, bd = blurImg.data;
-  const amount = 4;
-  for (let i = 0; i < d.length; i += 4) {
-    for (let c = 0; c < 3; c++) {
-      d[i + c] = Math.max(0, Math.min(255, d[i + c] + amount * (d[i + c] - bd[i + c])));
-    }
-  }
-
-  // Niveaux de gris + étirement de contraste (min/max de la zone ramenés à
-  // 0-255), sur l'image déjà renforcée ci-dessus.
-  let min = 255, max = 0;
+  const d = img.data;
   for (let i = 0; i < d.length; i += 4) {
     const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
     d[i] = d[i + 1] = d[i + 2] = g;
-    if (g < min) min = g;
-    if (g > max) max = g;
-  }
-  const range = Math.max(1, max - min);
-  for (let i = 0; i < d.length; i += 4) {
-    const v = ((d[i] - min) / range) * 255;
-    d[i] = d[i + 1] = d[i + 2] = v;
   }
   ctx.putImageData(img, 0, 0);
   return canvas;
@@ -458,10 +439,13 @@ const NAME_CANDIDATES_PADDED = [0.48, 0.40, 0.56, 0.32].map((y) => ({ x: 0.10, y
 // tolérer l'imprécision de cadrage. Point de départ : la position par défaut
 // du cadre manuel (resetCropBox, mesurée sur une image de référence),
 // avec quelques variantes autour.
+// x ramené à 0 (au lieu de 0.02) et bande élargie : sur une vraie photo, 0.02
+// coupait la première lettre du set (« OGN » lu « GN »). Trouvé en comparant
+// plusieurs décalages contre une vraie capture — voir le commit.
 const CODE_CANDIDATES_PLAIN = [
-  { x: 0.02, y: 0.94, w: 0.46, h: 0.05 },
-  { x: 0.02, y: 0.925, w: 0.46, h: 0.06 },
-  { x: 0.02, y: 0.955, w: 0.46, h: 0.04 },
+  { x: 0, y: 0.94, w: 0.48, h: 0.05 },
+  { x: 0, y: 0.925, w: 0.48, h: 0.06 },
+  { x: 0, y: 0.955, w: 0.48, h: 0.04 },
 ];
 // Conversion de la position "pleine carte" ci-dessus vers les coordonnées
 // d'une capture caméra avec marge (guideRect(0.25) : la carte occupe le
