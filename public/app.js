@@ -167,12 +167,20 @@ async function processCapturedImage(source, padded = false) {
     cropBitmap = await createImageBitmap(source);
     drawCropStage(); // fonctionne même cropTool masqué (ne dépend pas de sa visibilité)
 
+    // Galerie seulement (la caméra en direct cadre déjà précisément via le
+    // gabarit, pas besoin de deviner les bords après coup) : tente de
+    // détecter le rectangle de la carte dans la photo, pour ne plus
+    // supposer qu'elle remplit toute l'image. Si la détection échoue
+    // (doigts sur le bord, OpenCV indisponible...), box reste la photo
+    // entière — comportement inchangé, pas de régression.
+    const box = padded ? FULL_BOX : (await detectCardBounds(cropBitmap)) || FULL_BOX;
+
     // Le code imprimé (ex. « OGN • 269/298 ») identifie la carte indépendamment
     // de sa langue d'impression, contrairement au nom : le catalogue (API
     // Riftcodex) n'existe qu'en anglais, donc une carte imprimée en français,
     // allemand, etc. ne pourra JAMAIS être reconnue par son nom, même avec
     // une photo parfaite. On essaie donc le code en premier.
-    const codeResult = await tryCodeMatch(padded);
+    const codeResult = await tryCodeMatch(padded, box);
     if (codeResult.cards.length === 1) {
       // Une seule carte possible pour ce code : ajout direct, sans attendre
       // un tap, pour pouvoir enchaîner les cartes sans interruption.
@@ -190,7 +198,7 @@ async function processCapturedImage(source, padded = false) {
       return true;
     }
 
-    const { card, text } = await tryNameMatch(padded);
+    const { card, text } = await tryNameMatch(padded, box);
     if (card) {
       lastScanCards = [card];
       const r = await addToInventory(card.id, scanFinish);
@@ -485,15 +493,27 @@ async function ocrRegion(region, zoom) {
   }
 }
 
+// Replace une zone candidate (définie relativement à "la carte") dans les
+// coordonnées de la boîte où la carte a été détectée (voir detectCardBounds).
+// Boîte neutre par défaut (toute l'image = "on suppose que la carte remplit
+// la photo", le comportement d'avant la détection des bords).
+const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
+function remapRegion(region, box) {
+  return {
+    x: box.x + region.x * box.w, y: box.y + region.y * box.h,
+    w: region.w * box.w, h: region.h * box.h,
+  };
+}
+
 // Les zones candidates sont lues EN PARALLÈLE, pas l'une après l'autre :
 // jusqu'à 4 lectures OCR enchaînées (~1-3 s chacune sur un téléphone)
 // rendaient l'échec très long (jusqu'à 8 au total avec le nom). Ce sont des
 // lectures indépendantes de la même image déjà capturée, donc rien n'empêche
 // de les lancer toutes à la fois et de garder la première qui réussit.
-async function tryCodeMatch(padded = false) {
+async function tryCodeMatch(padded = false, box = FULL_BOX) {
   const candidates = padded ? CODE_CANDIDATES_PADDED : CODE_CANDIDATES_PLAIN;
   const results = await Promise.all(candidates.map(async (region) => {
-    const text = await ocrRegion(region, 6);
+    const text = await ocrRegion(padded ? region : remapRegion(region, box), 6);
     if (!text) return { text: '', code: null, cards: [] };
     const r = await api('/api/scan', { method: 'POST', body: { text } });
     return { text, code: r.code, cards: r.cards || [] };
@@ -503,10 +523,10 @@ async function tryCodeMatch(padded = false) {
   return { cards: [], code: null, text: results.map((r) => r.text).find(Boolean) || '' };
 }
 
-async function tryNameMatch(padded = false) {
+async function tryNameMatch(padded = false, box = FULL_BOX) {
   const candidates = padded ? NAME_CANDIDATES_PADDED : NAME_CANDIDATES_PLAIN;
   const results = await Promise.all(candidates.map(async (region) => {
-    const text = await ocrRegion(region, 3);
+    const text = await ocrRegion(padded ? region : remapRegion(region, box), 3);
     if (!text) return { text: '', card: null };
     const r = await api('/api/scan-name', { method: 'POST', body: { text } });
     return { text, card: r.confident ? r.card : null };
@@ -514,6 +534,112 @@ async function tryNameMatch(padded = false) {
   const hit = results.find((r) => r.card);
   if (hit) return hit;
   return { card: null, text: results.map((r) => r.text).find(Boolean) || '' };
+}
+
+// Charge OpenCV.js à la demande (~10 Mo, mis en cache par le navigateur
+// après le premier chargement) : seuls les utilisateurs de "Prendre une
+// photo" paient ce coût, pas ceux qui n'utilisent que la caméra en direct
+// (dont le cadrage est déjà contrôlé par le gabarit, donc pas besoin de
+// deviner les bords de la carte après coup).
+let openCvLoadPromise = null;
+function loadOpenCv() {
+  if (window.cv && typeof window.cv.Mat === 'function') return Promise.resolve();
+  if (openCvLoadPromise) return openCvLoadPromise;
+  openCvLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js';
+    script.onerror = () => reject(new Error("OpenCV n'a pas pu être chargé"));
+    script.onload = () => {
+      const check = () => {
+        if (window.cv && typeof window.cv.Mat === 'function') resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    };
+    document.head.appendChild(script);
+  });
+  return openCvLoadPromise;
+}
+
+// Détecte le rectangle de la carte dans une photo "galerie" (pas pré-cadrée
+// par le gabarit caméra), pour ne plus supposer que la carte remplit toute
+// la photo (CODE_CANDIDATES_PLAIN) — hypothèse qui échoue dès que la photo a
+// de la marge (carte tenue en main, pas juste posée à plat).
+// Best-effort, pas garanti : quand des doigts recouvrent le bord de la
+// carte, leur contour fusionne avec celui de la carte dans la détection, et
+// aucune détection de contours (même une vraie, vérifié avec OpenCV) ne peut
+// les séparer proprement — dans ce cas la fonction renvoie null et on
+// retombe sur l'hypothèse "la carte remplit la photo" (comportement
+// d'avant, pas de régression).
+async function detectCardBounds(bitmap) {
+  try {
+    await loadOpenCv();
+  } catch (err) {
+    return null;
+  }
+  const sw = 400;
+  const sh = Math.round(sw * bitmap.height / bitmap.width);
+  const canvas = document.createElement('canvas');
+  canvas.width = sw;
+  canvas.height = sh;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, sw, sh);
+
+  const src = cv.imread(canvas);
+  const gray = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  const blurred = new cv.Mat();
+  cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+  const edges = new cv.Mat();
+  cv.Canny(blurred, edges, 40, 120);
+  const kernel = cv.Mat.ones(5, 5, cv.CV_8U);
+  const dilated = new cv.Mat();
+  cv.dilate(edges, dilated, kernel);
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  cv.findContours(dilated, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+  // Le plus grand contour à 4 coins (quadrilatère) dont l'aire est
+  // plausible pour une carte dans le cadre (ni un petit détail interne de
+  // la carte, ni la quasi-totalité de la photo — dans ce dernier cas la
+  // photo est déjà bien cadrée, pas la peine de "détecter" quoi que ce soit).
+  const frameArea = sw * sh;
+  let bestRect = null;
+  let bestArea = 0;
+  for (let i = 0; i < contours.size(); i++) {
+    const cnt = contours.get(i);
+    const area = cv.contourArea(cnt);
+    const ratio = area / frameArea;
+    if (ratio >= 0.5 && ratio <= 0.92) {
+      const peri = cv.arcLength(cnt, true);
+      const approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+      if (approx.rows === 4 && area > bestArea) {
+        bestArea = area;
+        bestRect = cv.boundingRect(cnt);
+      }
+      approx.delete();
+    }
+    cnt.delete();
+  }
+
+  src.delete();
+  gray.delete();
+  blurred.delete();
+  edges.delete();
+  kernel.delete();
+  dilated.delete();
+  contours.delete();
+  hierarchy.delete();
+
+  if (!bestRect) return null;
+  // Petite marge de sécurité : approxPolyDP peut légèrement rogner les bords.
+  const pad = 0.015;
+  return {
+    x: Math.max(0, bestRect.x / sw - pad),
+    y: Math.max(0, bestRect.y / sh - pad),
+    w: Math.min(1, bestRect.width / sw + pad * 2),
+    h: Math.min(1, bestRect.height / sh + pad * 2),
+  };
 }
 
 window.addEventListener('resize', () => {
